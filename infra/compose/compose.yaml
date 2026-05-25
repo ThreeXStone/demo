@@ -1,0 +1,26 @@
+services:
+  web:
+    build:
+      context: ../../clients/web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+
+  api:
+    build:
+      context: ../../services/api
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    environment:
+      - NODE_ENV=production

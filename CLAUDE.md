@@ -1,0 +1,104 @@
+# 项目概览
+
+## 项目结构
+这是一个基于 Turbo 的 monorepo 项目，使用 Bun 作为包管理器。
+
+```
+.
+├── clients/           # 前端客户端
+│   └── web/          # Next.js Web 应用
+├── services/         # 后端服务
+│   └── api/          # NestJS API 服务
+│       ├── src/
+│       │   ├── config/      # 配置文件
+│       │   ├── llm/         # LLM 模块（controller/service）
+│       │   │   ├── memory/  # Memory 相关服务
+│       │   ├── main.ts      # 入口文件
+│       │   └── app.module.ts
+├── packages/         # 共享包
+├── infra/            # 基础设施
+└── .claude/          # Claude 配置和记忆
+```
+
+## 常用命令
+
+```bash
+# 开发所有服务
+bun run dev
+
+# 构建所有项目
+bun run build
+
+# 类型检查
+bun run typecheck
+
+# 单独启动 API 服务
+cd services/api && bunx ts-node src/main.ts
+```
+
+## 已实现功能
+
+### LLM 模块 (services/api/src/llm/)
+
+1. **基础 LLM 服务** - `LlmService`
+2. **需求结构化抽取** - `RequirementService`
+3. **多轮对话 Memory** - `RunnableMemoryService`
+   - `POST /api/memory/chat` - 发送消息
+   - `GET /api/memory/history?sessionId=xxx` - 获取历史
+   - `DELETE /api/memory/clear?sessionId=xxx` - 清除会话
+
+## 技术栈
+
+- 前端：Next.js
+- 后端：NestJS
+- LLM 框架：LangChain (@langchain/core, @langchain/openai)
+- 包管理：Bun
+- 构建：Turbo
+
+---
+
+## 踩过的坑
+
+<!-- LangChain Memory 实现 (2026-05-24) -->
+- ❌ 错误做法：`import { trimMessages } from '@langchain/core/runnables'`
+  ✅ 正确做法：`import { trimMessages } from '@langchain/core/messages'`
+  📌 原因：LangChain 的 trimMessages 定义在 messages 模块，不是 runnables
+
+- ❌ 错误做法：直接在链中调用 trimMessages
+  ✅ 正确做法：用 RunnablePassthrough.assign 包装
+  📌 原因：trimMessages 需要处理 history 数组后再传入 prompt，不能直接 pipe
+
+- ❌ 错误做法：`@Delete('clear') async clear(@Body() body: ClearRequest)`
+  ✅ 正确做法：`@Delete('clear') async clear(@Query('sessionId') sessionId: string)`
+  📌 原因：HTTP DELETE 请求通过 URL 查询参数传递数据，@Body() 接收不到
+
+- ❌ 错误做法：每次修改都 `bun run dev` 后台启动，频繁遇到 EADDRINUSE
+  ✅ 正确做法：先用 `bun run build` 检查编译错误，确认无误后再启动服务
+  📌 原因：编译错误会导致启动失败，留下僵尸进程占用端口
+
+<!-- 文件系统工具实现 (2026-05-24) -->
+- ❌ 错误做法：使用 promises fs (fs.readFile, fs.mkdir) 和复杂的返回值结构
+  ✅ 正确做法：使用同步 fs (fs.readFileSync, fs.mkdirSync) 和简洁的返回值
+  📌 原因：LangChain 工具本身就是 async 的，内部用同步即可，示范代码风格更简洁
+
+- ❌ 错误做法：返回值包装 found/success/message 等字段
+  ✅ 正确做法：直接返回数据或 { error: string }
+  📌 原因：过多的包装字段增加复杂度，模型理解更困难
+
+- ❌ 错误做法：在工具中添加 ensureWorkspace 自动创建目录
+  ✅ 正确做法：按需创建，writeFile 时自动创建父目录即可
+  📌 原因：read 操作不应自动创建目录，避免误操作
+
+<!-- 向量化能力接入 (2026-05-25) -->
+- ❌ 错误做法：`import { MemoryVectorStore } from 'langchain/vectorstores/memory'`
+  ✅ 正确做法：手动实现简单的内存向量存储
+  📌 原因：LangChain 1.4.2 版本中没有 MemoryVectorStore，包结构分散
+
+- ❌ 错误做法：使用 HuggingFaceTransformersEmbeddings 下载远程模型
+  ✅ 正确做法：使用 mock embedding 或确认网络环境支持
+  📌 原因：HuggingFaceTransformersEmbeddings 初始化时会下载模型，网络请求可能失败
+
+- ❌ 错误做法：遗漏安装 @huggingface/transformers 依赖
+  ✅ 正确做法：仔细检查运行时错误日志，补充缺失依赖
+  📌 原因：@langchain/community 的 HuggingFaceTransformersEmbeddings 依赖 @huggingface/transformers
+

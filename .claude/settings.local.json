@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun *)",
+      "Bash(mkdir -p /home/penglei/demo/clients/web)",
+      "Bash(bunx create-next-app@latest . --typescript --eslint --app --src-dir --import-alias \"@/*\" --use-npm)",
+      "Bash(mkdir -p /home/penglei/demo/services/api)",
+      "Bash(bunx @nestjs/cli@latest new . --skip-git --package-manager npm)",
+      "Bash(curl -s http://localhost:3001/health)",
+      "Bash(curl -s http://localhost:3001/hello)",
+      "Bash(pkill -f \"nest start\")",
+      "Bash(pkill -f \"node\")",
+      "Bash(bunx nest *)",
+      "Bash(bunx tsc *)",
+      "Bash(bun run *)",
+      "Read(//tmp/**)",
+      "Bash(pkill -f \"nest\")",
+      "Bash(pkill -f \"ts-node\")",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(netstat -tlnp)",
+      "Bash(curl -s -X POST http://localhost:3001/api/langchain/invoke -H 'Content-Type: application/json' -d '{\"input\": \"用户注册时必须绑定手机号，密码至少8位\"}')",
+      "Bash(pkill -f \"bunx ts-node\")",
+      "Bash(lsof -ti:3001)",
+      "Bash(xargs kill -9)",
+      "Bash(curl *)",
+      "Bash(node /tmp/test-service.mjs)",
+      "Bash(bunx ts-node *)",
+      "Bash(node *)",
+      "Bash(jq)",
+      "Bash(pkill *)",
+      "Bash(jq '.history[-2:] | .[].role, .[].content | head -4)",
+      "Bash(git add *)"
+    ]
+  }
+}
