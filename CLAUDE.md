@@ -55,6 +55,35 @@ cd services/api && bunx ts-node src/main.ts
 - 包管理：Bun
 - 构建：Turbo
 
+
+
+## Git 提交规范
+
+所有 git commit 必须遵循 Conventional Commits 格式：
+`<type>(<scope>): <简短描述>`
+
+### 类型（type）
+- feat：新功能
+- fix：修复 Bug
+- docs：文档变更
+- style：格式调整（不影响逻辑）
+- refactor：重构
+- test：测试相关
+- chore：构建/依赖/工具
+
+### 要求
+- 描述用中文，简洁清晰，不超过 50 字
+- 提交前自动检查是否有未暂存的文件
+- 不要用 `git add .`，要明确指定文件或目录
+- 重要变更需在 commit body 里补充说明原因
+
+## Git 工作流偏好
+
+- 提交前先用 `git diff --staged` 给我看改动摘要，确认后再提交
+- 涉及多个功能点时，拆分成多个小 commit，不要一次性全提交
+- 合并前检查是否需要 rebase
+
+
 ---
 
 ## 踩过的坑
