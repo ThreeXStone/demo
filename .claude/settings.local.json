@@ -29,7 +29,11 @@
       "Bash(jq)",
       "Bash(pkill *)",
       "Bash(jq '.history[-2:] | .[].role, .[].content | head -4)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(bunx prisma *)",
+      "Bash(PGPASSWORD=000000 psql -h localhost -U postgres -c \"CREATE DATABASE \\\\\"myapp525_shadow\\\\\";\")",
+      "Bash(PGPASSWORD=000000 psql -h localhost -U postgres -d myapp525_shadow -c \"CREATE EXTENSION IF NOT EXISTS vector;\")",
+      "Bash(PGPASSWORD=000000 psql *)"
     ]
   }
 }
