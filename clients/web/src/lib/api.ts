@@ -163,3 +163,7 @@ export async function getDocument(id: string): Promise<Document> {
 export async function deleteDocument(id: string): Promise<void> {
   return request(`/api/documents/${id}`, { method: "DELETE" });
 }
+
+export async function processDocument(id: string): Promise<{ chunkCount: number }> {
+  return request(`/api/documents/${id}/process`, { method: "POST" });
+}
