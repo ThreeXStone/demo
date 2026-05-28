@@ -131,3 +131,12 @@ cd services/api && bunx ts-node src/main.ts
   ✅ 正确做法：仔细检查运行时错误日志，补充缺失依赖
   📌 原因：@langchain/community 的 HuggingFaceTransformersEmbeddings 依赖 @huggingface/transformers
 
+<!-- Next.js Rewrites 代理 (2026-05-28) -->
+- ❌ 错误做法：`source: "/api/:path*"` → `destination: "http://localhost:3001/:path*"`
+  ✅ 正确做法：`destination: "http://localhost:3001/api/:path*"`
+  📌 原因：Next.js rewrites 中 `:path*` 只捕获 `/api/` 之后的部分（不包含 `/api/`），目的地必须显式加上 `/api/` 前缀，否则 NestJS 的 `@Controller('api/...')` 路由匹配不上
+
+<!-- NestJS 热更新 (2026-05-28) -->
+- ❌ 错误做法：新增 NestJS Controller/Service 后不重启服务就直接测试
+  ✅ 正确做法：每次新增文件后重启 API 服务（`ts-node` 不会自动扫描新文件）
+  📌 原因：`ts-node` + NestJS 只监听已有文件的变更，不会监听新增文件的创建，新建的 Controller 路由不会注册
