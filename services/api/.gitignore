@@ -13,3 +13,4 @@ dist/
 # IDE
 .vscode/
 .idea/
+/../../generated/prisma
