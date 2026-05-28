@@ -33,7 +33,9 @@
       "Bash(bunx prisma *)",
       "Bash(PGPASSWORD=000000 psql -h localhost -U postgres -c \"CREATE DATABASE \\\\\"myapp525_shadow\\\\\";\")",
       "Bash(PGPASSWORD=000000 psql -h localhost -U postgres -d myapp525_shadow -c \"CREATE EXTENSION IF NOT EXISTS vector;\")",
-      "Bash(PGPASSWORD=000000 psql *)"
+      "Bash(PGPASSWORD=000000 psql *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
