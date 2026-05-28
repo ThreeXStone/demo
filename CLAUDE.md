@@ -140,3 +140,8 @@ cd services/api && bunx ts-node src/main.ts
 - ❌ 错误做法：新增 NestJS Controller/Service 后不重启服务就直接测试
   ✅ 正确做法：每次新增文件后重启 API 服务（`ts-node` 不会自动扫描新文件）
   📌 原因：`ts-node` + NestJS 只监听已有文件的变更，不会监听新增文件的创建，新建的 Controller 路由不会注册
+
+<!-- Multer 中文文件名 (2026-05-28) -->
+- ❌ 错误做法：`file.originalname` 直接用于文件名存储和入库
+  ✅ 正确做法：`const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8')`
+  📌 原因：Multer 默认使用 latin1 解码 multipart 中的文件名，中文等非 ASCII 字符会乱码，需要手动转为 utf8
