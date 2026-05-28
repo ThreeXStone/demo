@@ -110,3 +110,56 @@ export async function deleteConversation(conversationId: string): Promise<void> 
     method: "DELETE",
   });
 }
+
+// --- Documents ---
+
+export interface Document {
+  id: string;
+  userId: string;
+  filename: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  status: string;
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+async function uploadRequest(path: string, body: FormData) {
+  const token = getToken();
+  const headers: HeadersInit = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
+  const res = await fetch(path, {
+    method: "POST",
+    headers,
+    body,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || `HTTP ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function uploadDocument(file: File): Promise<Document> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return uploadRequest("/api/documents/upload", formData);
+}
+
+export async function listDocuments(): Promise<Document[]> {
+  return request("/api/documents");
+}
+
+export async function getDocument(id: string): Promise<Document> {
+  return request(`/api/documents/${id}`);
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  return request(`/api/documents/${id}`, { method: "DELETE" });
+}
