@@ -150,3 +150,38 @@ cd services/api && bunx ts-node src/main.ts
 - ❌ 错误做法：`pipeline('feature-extraction', 'Xenova/...')` 不设任何选项，依赖网络自动下载
   ✅ 正确做法：先用 curl/hf-mirror 下载 ONNX 模型到 `node_modules/@xenova/transformers/models/<model-name>/`，再用 `local_files_only: true`
   📌 原因：`@xenova/transformers` 内部 fetch 不走系统代理，网络受限环境下模型下载失败；模型缓存路径不是 `~/.cache/huggingface`，而是 `node_modules/@xenova/transformers/models/`
+
+<!-- OpenAI Structured Output 限制 (2026-05-29) -->
+- ❌ 错误做法：使用 `z.discriminatedUnion('type', [...])` 或 `z.union([...])` 定义 Schema 传给 `withStructuredOutput()`
+  ✅ 正确做法：平铺所有字段到单一 object，每个字段都有 `.describe()`，去掉 `.optional()` 改用空字符串默认值
+  📌 原因：OpenAI structured output API 不支持 `oneOf`/`anyOf`/`$ref`/`propertyNames`，且所有 properties 必须在 `required` 数组中。DeepSeek 完全不支持 structured output
+
+<!-- DeepSeek API 与 Structured Output (2026-05-29) -->
+- ❌ 错误做法：对 DeepSeek 使用 `withStructuredOutput()` 或 `response_format`
+  ✅ 正确做法：Prompt 中要求返回 JSON → model.invoke() → 正则提取 JSON → Zod 客户端校验
+  📌 原因：DeepSeek 不支持 OpenAI 的 response_format（jsonSchema 和 functionCalling 都报 "unavailable"），但 `z.discriminatedUnion` 可以用在客户端校验阶段
+
+<!-- Zod v4 兼容性 (2026-05-29) -->
+- ❌ 错误做法：`z.record(z.string())` 只传一个参数
+  ✅ 正确做法：`z.record(z.string(), z.string())` 两个参数分别指定 key 和 value 的 schema
+  📌 原因：Zod v4 的 record() 签名变更，必须同时提供 key schema 和 value schema
+
+<!-- SSE 流式响应 (2026-05-29) -->
+- ❌ 错误做法：在 NestJS 普通 `@Post()` 中 `return` 流式数据
+  ✅ 正确做法：`@Res() res: any` 接管响应 → `res.setHeader('Content-Type', 'text/event-stream')` → `res.flushHeaders()` → `res.write(formatSSE(...))` → `res.end()`
+  📌 原因：NestJS 默认将返回值序列化为 JSON 一次发送完毕，SSE 需要手动控制 response 对象的生命周期
+
+<!-- React setInterval 闭包 (2026-05-29) -->
+- ❌ 错误做法：`setInterval(poll, 3000)` 中 poll 依赖 state 变量（通过 useCallback）
+  ✅ 正确做法：用 `useRef` 存储变化值（如 lastSeen），poll 函数内直接读 ref.current
+  📌 原因：setInterval 捕获的闭包永远是第一次渲染时的值，即使 useCallback 依赖项变化重新创建 poll，定时器仍在调用旧函数
+
+<!-- 多服务端口冲突 (2026-05-29) -->
+- ❌ 错误做法：`bun run dev` 在 monorepo 根目录或 services/api 下，不确定启动的是哪个服务
+  ✅ 正确做法：明确路径和命令——API 用 `bunx ts-node src/main.ts`（3001），Chat 用同命令（3002），前端用 `bun run dev`（各自端口）
+  📌 原因：monorepo 的 `bun run dev` 可能触发 Turbo pipeline，同时启动多个服务导致端口抢占。先启动后端，再启动前端
+
+<!-- Prisma v7 驱动适配器 (2026-05-29) -->
+- ❌ 错误做法：`new PrismaClient()` 无参或 `super({ datasources: { db: { url } } })`
+  ✅ 正确做法：`super({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) })`
+  📌 原因：Prisma v7 移除内嵌引擎，必须通过 `@prisma/adapter-pg` 提供运行时数据库连接
