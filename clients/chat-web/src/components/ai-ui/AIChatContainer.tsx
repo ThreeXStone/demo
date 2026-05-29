@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { uiAction } from '@/lib/api';
+import { uiAction, analyzeStream } from '@/lib/api';
 import type { ChatMessage, UIComponent, StreamMessage, ProgressPayload } from '@/lib/types';
 import ComponentRenderer from './ComponentRenderer';
 import ThinkingIndicator from './ThinkingIndicator';
@@ -33,7 +33,11 @@ export default function AIChatContainer() {
       const ctrl = new AbortController();
       abortRef.current = ctrl;
 
-      const resp = await fetch('/api/ui-chat/chat/stream', {
+      // Auto-detect: analysis requests go to LangGraph pipeline
+      const isAnalysis = /分析|评估|评审|需求|功能|开发|设计|方案/.test(text) && text.length > 15;
+      const endpoint = isAnalysis ? '/api/ui-chat/analyze' : '/api/ui-chat/chat/stream';
+
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, input }),

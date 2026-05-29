@@ -95,6 +95,15 @@ export async function getNotifications(since?: string): Promise<NotificationEven
 
 // --- UI Chat (chat service 3002) ---
 
+/** Trigger LangGraph analysis via SSE. Returns a ReadableStream reader. */
+export function analyzeStream(sessionId: string, input: string): Promise<Response> {
+  return fetch("/api/ui-chat/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, input }),
+  });
+}
+
 export async function uiChat(sessionId: string, input: string): Promise<AIUIResponse> {
   const res = await fetch("/api/ui-chat/chat", {
     method: "POST",
