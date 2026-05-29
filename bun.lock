@@ -10,6 +10,23 @@
         "typescript": "^5.0.0",
       },
     },
+    "clients/chat-web": {
+      "name": "@repo/chat-web",
+      "version": "0.1.0",
+      "dependencies": {
+        "next": "15",
+        "react": "19.2.4",
+        "react-dom": "19.2.4",
+      },
+      "devDependencies": {
+        "@tailwindcss/postcss": "^4",
+        "@types/node": "^20",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+        "tailwindcss": "^4",
+        "typescript": "^5",
+      },
+    },
     "clients/web": {
       "name": "@repo/web",
       "version": "0.1.0",
@@ -96,16 +113,21 @@
       "name": "@repo/chat",
       "version": "0.0.0",
       "dependencies": {
+        "@langchain/core": "^1.1.48",
+        "@langchain/openai": "^1.4.7",
         "@nestjs/common": "^10.0.0",
         "@nestjs/config": "^4.0.4",
         "@nestjs/core": "^10.0.0",
         "@nestjs/platform-express": "^10.0.0",
         "@prisma/client": "^7.8.0",
+        "js-yaml": "^4.1.1",
         "reflect-metadata": "^0.2.0",
         "rxjs": "^7.8.0",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@nestjs/cli": "^10.0.0",
+        "@types/js-yaml": "^4.0.9",
         "@types/node": "^20.0.0",
         "dotenv": "^17.4.2",
         "prisma": "^7.8.0",
@@ -536,6 +558,8 @@
     "@repo/api": ["@repo/api@workspace:services/api"],
 
     "@repo/chat": ["@repo/chat@workspace:services/chat"],
+
+    "@repo/chat-web": ["@repo/chat-web@workspace:clients/chat-web"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
 
