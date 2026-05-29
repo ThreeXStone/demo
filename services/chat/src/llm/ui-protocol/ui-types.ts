@@ -1,25 +1,28 @@
+// --- Component Version ---
+export const UI_PROTOCOL_VERSION = '1.0.0';
+
 // --- UI Component Types ---
 
 export interface UIText {
   type: 'text';
-  content: string; // Markdown
+  content: string;
 }
 
 export interface UISelection {
   type: 'selection';
   title: string;
-  mode: 'single' | 'multiple';
   options: { label: string; value: string; description?: string }[];
+  allowMultiple?: boolean;
 }
 
 export interface UIFormField {
   name: string;
   label: string;
-  type: 'input' | 'select' | 'textarea' | 'date' | 'number';
+  fieldType: 'input' | 'select' | 'textarea' | 'date' | 'number';
   required?: boolean;
   placeholder?: string;
-  options?: { label: string; value: string }[]; // for select
-  defaultValue?: string | number;
+  options?: { label: string; value: string }[];
+  defaultValue?: string;
 }
 
 export interface UIForm {
@@ -58,6 +61,7 @@ export interface UITable {
 
 export interface UIActionButtons {
   type: 'action_buttons';
+  title?: string;
   buttons: { label: string; value: string; style?: 'primary' | 'secondary' | 'danger' }[];
 }
 
@@ -71,17 +75,47 @@ export type UIResponse =
   | UITable
   | UIActionButtons;
 
-// --- AI Response ---
-
 export interface AIUIResponse {
+  version: string;
   message: string;
   components: UIResponse[];
 }
 
-// --- User Action ---
-
 export interface UIAction {
   type: 'select' | 'form_submit' | 'confirm' | 'cancel' | 'button_click';
-  componentId?: string;
+  componentType?: string;
   payload: Record<string, unknown>;
+}
+
+// --- SSE Streaming Types ---
+
+export interface StreamMessage {
+  messageType: 'markdown' | 'ui' | 'meta' | 'progress' | 'done' | 'error';
+  timestamp: string;
+  payload: MarkdownPayload | UIPayload | ProgressPayload | ErrorPayload | null;
+}
+
+export interface MarkdownPayload {
+  content: string;
+  isChunk: boolean;
+  messageId?: string;
+}
+
+export interface UIPayload {
+  messageId: string;
+  components: UIResponse[];
+  thinking?: string;
+}
+
+export interface ProgressPayload {
+  agent: string;
+  agentDisplayName: string;
+  step: number;
+  totalSteps: number;
+  status: 'started' | 'completed';
+}
+
+export interface ErrorPayload {
+  code: string;
+  message: string;
 }

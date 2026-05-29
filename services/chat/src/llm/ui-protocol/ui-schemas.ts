@@ -117,8 +117,35 @@ export const uiComponentSchema = z.discriminatedUnion('type', [
 ]);
 
 export const aiUIResponseSchema = z.object({
+  version: z.string().describe('UI 协议版本号，当前 1.0.0'),
   message: z.string().describe('自然语言回复文本'),
-  components: z.array(uiComponentSchema).describe('UI 组件列表，0-3 个'),
+  components: z.array(uiComponentSchema).describe('UI 组件列表'),
 });
 
 export type AIUIResponse = z.infer<typeof aiUIResponseSchema>;
+
+// --- Business Validation ---
+
+export function validateUIResponse(response: AIUIResponse): AIUIResponse {
+  // 1. 确保 message 不为空
+  if (!response.message?.trim()) {
+    response.message = '正在为您处理...';
+  }
+
+  // 2. 过滤无效组件
+  response.components = response.components.filter((comp) => {
+    if (comp.type === 'selection' && comp.options && comp.options.length < 2) return false;
+    if (comp.type === 'form' && comp.fields && comp.fields.length === 0) return false;
+    if (comp.type === 'steps' && comp.steps && comp.steps.length === 0) return false;
+    if (comp.type === 'action_buttons' && comp.buttons && comp.buttons.length === 0) return false;
+    if (comp.type === 'table' && (!comp.rows || comp.rows.length === 0)) return false;
+    return true;
+  });
+
+  // 3. 限制单次返回的组件数量
+  if (response.components.length > 5) {
+    response.components = response.components.slice(0, 5);
+  }
+
+  return response;
+}
