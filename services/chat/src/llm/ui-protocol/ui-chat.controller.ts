@@ -9,14 +9,21 @@ function formatSSE(data: Record<string, unknown>): string {
 }
 
 function getModel(config: ConfigService, modelName?: string) {
+  const model = modelName || config.get('LLM_MODEL') || 'deepseek-v4-pro';
+  const isGpt = model.startsWith('gpt');
+
   return new ChatOpenAI({
-    model: modelName || config.get('LLM_MODEL') || 'deepseek-v4-pro',
+    model,
     temperature: 0.3,
     maxTokens: 2048,
     timeout: 25_000,
-    apiKey: config.get('OPENAI_API_KEY'),
+    apiKey: isGpt
+      ? config.get('GPT_API_KEY') || config.get('OPENAI_API_KEY')
+      : config.get('OPENAI_API_KEY'),
     configuration: {
-      baseURL: config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
+      baseURL: isGpt
+        ? config.get('GPT_BASE_URL') || config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1'
+        : config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
       timeout: 25_000,
     },
   });

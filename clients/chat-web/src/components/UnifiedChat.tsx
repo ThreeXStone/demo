@@ -16,12 +16,20 @@ function routeIntent(input: string): 'rag' | 'langgraph' {
   return 'langgraph';
 }
 
+const MODELS = [
+  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+  { value: 'gpt-5.4', label: 'GPT-5' },
+];
+
 export default function UnifiedChat() {
   const [sessionId] = useState(() => `u-${Date.now()}`);
   const [convId, setConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('preferred_model') || 'deepseek-v4-pro' : 'deepseek-v4-pro'
+  );
   const [progress, setProgress] = useState<ProgressPayload | null>(null);
   const [streamingContent, setStreamingContent] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -51,7 +59,7 @@ export default function UnifiedChat() {
     const resp = await fetch('/api/ui-chat/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, input: text }),
+      body: JSON.stringify({ sessionId, input: text, model }),
       signal: ctrl.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -152,8 +160,27 @@ export default function UnifiedChat() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
+  const handleModelChange = (val: string) => {
+    setModel(val);
+    localStorage.setItem('preferred_model', val);
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#09090b]">
+      {/* Model selector header */}
+      <div className="px-6 py-2 border-b border-zinc-800/60 flex items-center justify-end gap-2">
+        <span className="text-xs text-zinc-600">模型:</span>
+        <select
+          value={model}
+          onChange={(e) => handleModelChange(e.target.value)}
+          className="text-xs bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-zinc-400 focus:outline-none focus:border-zinc-700"
+        >
+          {MODELS.map((m) => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </select>
+      </div>
+
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="max-w-2xl mx-auto space-y-6">
           {messages.length === 0 && !loading && (
