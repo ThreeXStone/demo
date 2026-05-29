@@ -7,6 +7,7 @@ import {
   type Message,
 } from '@/lib/api';
 import type { UIComponent, StreamMessage, ProgressPayload } from '@/lib/types';
+import { addLog } from '@/lib/log-store';
 import ComponentRenderer from './ai-ui/ComponentRenderer';
 import ThinkingIndicator from './ai-ui/ThinkingIndicator';
 
@@ -100,13 +101,22 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
           if (!payload) continue;
           try {
             const msg: StreamMessage = JSON.parse(payload);
-            if (msg.messageType === 'progress') setProgress(msg.payload as ProgressPayload);
-            else if (msg.messageType === 'markdown') {
+            if (msg.messageType === 'progress') {
+              setProgress(msg.payload as ProgressPayload);
+              addLog({ type: 'progress', agent: (msg.payload as any).agent || '', agentDisplayName: (msg.payload as any).agentDisplayName || '', step: (msg.payload as any).step, totalSteps: (msg.payload as any).totalSteps, timestamp: msg.timestamp });
+            } else if (msg.messageType === 'node_start') {
+              addLog({ type: 'node_start', agent: (msg.payload as any).agent || '', agentDisplayName: (msg.payload as any).agentDisplayName || '', timestamp: msg.timestamp });
+            } else if (msg.messageType === 'node_end') {
+              addLog({ type: 'node_end', agent: (msg.payload as any).agent || '', agentDisplayName: (msg.payload as any).agentDisplayName || '', duration: (msg.payload as any).duration, timestamp: msg.timestamp });
+            } else if (msg.messageType === 'markdown') {
               content += (msg.payload as any).content || '';
               setStreamingContent(content);
             } else if (msg.messageType === 'ui') components = (msg.payload as any).components;
             else if (msg.messageType === 'done') { /* handled by stream close */ }
-            else if (msg.messageType === 'error') throw new Error((msg.payload as any).message || 'Stream error');
+            else if (msg.messageType === 'error') {
+              addLog({ type: 'error', agent: 'system', agentDisplayName: '错误', timestamp: msg.timestamp });
+              throw new Error((msg.payload as any).message || 'Stream error');
+            }
           } catch (e) {
             if (e instanceof SyntaxError) continue;
             throw e;

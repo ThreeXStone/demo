@@ -6,6 +6,7 @@ import LoginForm from "@/components/LoginForm";
 import ConversationList from "@/components/ConversationList";
 import SidebarDocs from "@/components/SidebarDocs";
 import NotificationPanel from "@/components/NotificationPanel";
+import LogPanel from "@/components/LogPanel";
 import UnifiedChat from "@/components/UnifiedChat";
 
 export default function Home() {
@@ -54,6 +55,7 @@ export default function Home() {
       </div>
 
       <NotificationPanel />
+      <LogPanel />
     </div>
   );
 }
