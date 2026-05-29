@@ -1,94 +1,123 @@
 import { z } from 'zod';
 
-// OpenAI structured output: no $ref, no oneOf, no optional — all fields required.
+// --- Component Schemas ---
 
-export const uiComponentSchema = z.object({
-  type: z
-    .enum([
-      'text',
-      'selection',
-      'form',
-      'confirmation',
-      'card',
-      'steps',
-      'table',
-      'action_buttons',
-    ])
-    .describe('UI 组件类型标识'),
+const textResponseSchema = z.object({
+  type: z.literal('text'),
+  content: z.string().describe('Markdown 文本内容'),
+});
 
-  content: z.string().describe('text: Markdown 文本内容'),
-  title: z.string().describe('selection/form/card/confirmation/table/steps: 标题'),
-  mode: z.string().describe("selection: 'single' 或 'multiple'"),
+const selectionResponseSchema = z.object({
+  type: z.literal('selection'),
+  title: z.string().describe('选项标题'),
   options: z
     .array(
       z.object({
-        label: z.string().describe('选项显示文字'),
+        label: z.string().describe('选项文字'),
         value: z.string().describe('选项值'),
-        description: z.string().describe('选项补充说明'),
+        description: z.string().optional().describe('补充说明'),
       }),
     )
-    .describe('selection: 选项列表'),
+    .min(2)
+    .describe('可选项列表'),
+  allowMultiple: z.boolean().optional().describe('是否允许多选'),
+});
 
+const formResponseSchema = z.object({
+  type: z.literal('form'),
+  title: z.string().describe('表单标题'),
   fields: z
     .array(
       z.object({
-        name: z.string().describe('字段标识名'),
+        name: z.string().describe('字段标识'),
         label: z.string().describe('字段标签'),
-        type: z.string().describe("字段类型: 'input','select','textarea','date','number'"),
-        required: z.boolean().describe('是否必填'),
-        placeholder: z.string().describe('占位提示文字'),
+        fieldType: z.enum(['input', 'select', 'textarea', 'date', 'number']).describe('字段类型'),
+        required: z.boolean().optional().describe('是否必填'),
+        placeholder: z.string().optional().describe('占位提示'),
         options: z
           .array(z.object({ label: z.string(), value: z.string() }))
+          .optional()
           .describe('下拉选项'),
-        defaultValue: z.string().describe('默认值'),
+        defaultValue: z.string().optional().describe('默认值'),
       }),
     )
-    .describe('form: 表单字段列表'),
-  submitLabel: z.string().describe('form: 提交按钮文字'),
+    .describe('表单字段'),
+  submitLabel: z.string().optional().describe('提交按钮文字'),
+});
 
-  summary: z.string().describe('confirmation: 操作摘要说明'),
-  confirmLabel: z.string().describe('confirmation: 确认按钮文字'),
-  cancelLabel: z.string().describe('confirmation: 取消按钮文字'),
-  severity: z.string().describe("confirmation: 'info','warning','danger'"),
+const confirmationResponseSchema = z.object({
+  type: z.literal('confirmation'),
+  title: z.string().describe('确认标题'),
+  summary: z.string().describe('操作摘要'),
+  confirmLabel: z.string().optional().describe('确认按钮文字'),
+  cancelLabel: z.string().optional().describe('取消按钮文字'),
+  severity: z.enum(['info', 'warning', 'danger']).optional().describe('严重程度'),
+});
 
+const cardResponseSchema = z.object({
+  type: z.literal('card'),
+  title: z.string().describe('卡片标题'),
   sections: z
-    .array(z.object({ label: z.string(), value: z.string() }))
-    .describe('card: 信息字段'),
+    .array(z.object({ label: z.string().describe('字段标签'), value: z.string().describe('字段值') }))
+    .describe('信息字段'),
   status: z
     .object({
       label: z.string().describe('状态文字'),
-      color: z.string().describe("状态颜色: 'green','yellow','red','blue','gray'"),
+      color: z.enum(['green', 'yellow', 'red', 'blue', 'gray']).describe('状态颜色'),
     })
-    .describe('card: 状态信息'),
+    .optional()
+    .describe('状态信息'),
+});
 
+const stepsResponseSchema = z.object({
+  type: z.literal('steps'),
   steps: z
     .array(
       z.object({
         label: z.string().describe('步骤名称'),
-        status: z.string().describe("'completed','current','pending'"),
+        status: z.enum(['completed', 'current', 'pending']).describe('步骤状态'),
       }),
     )
-    .describe('steps: 步骤列表'),
+    .describe('步骤列表'),
+});
 
+const tableResponseSchema = z.object({
+  type: z.literal('table'),
   columns: z
-    .array(z.object({ key: z.string(), label: z.string() }))
-    .describe('table: 列定义'),
-  rows: z.array(z.array(z.string())).describe('table: 数据行'),
+    .array(z.object({ key: z.string().describe('列标识'), label: z.string().describe('列标题') }))
+    .describe('列定义'),
+  rows: z.array(z.record(z.string(), z.string())).describe('数据行，key 对应 column.key'),
+});
 
+const actionButtonsResponseSchema = z.object({
+  type: z.literal('action_buttons'),
   buttons: z
     .array(
       z.object({
         label: z.string().describe('按钮文字'),
-        value: z.string().describe('按钮动作值'),
-        style: z.string().describe("'primary','secondary','danger'"),
+        value: z.string().describe('按钮值'),
+        style: z.enum(['primary', 'secondary', 'danger']).optional().describe('按钮样式'),
       }),
     )
-    .describe('action_buttons: 按钮列表'),
+    .describe('按钮列表'),
 });
+
+// --- Discriminated Union ---
+
+export const uiComponentSchema = z.discriminatedUnion('type', [
+  textResponseSchema,
+  selectionResponseSchema,
+  formResponseSchema,
+  confirmationResponseSchema,
+  cardResponseSchema,
+  stepsResponseSchema,
+  tableResponseSchema,
+  actionButtonsResponseSchema,
+]);
 
 export const aiUIResponseSchema = z.object({
   message: z.string().describe('自然语言回复文本'),
-  components: z.array(uiComponentSchema).describe('UI 组件列表'),
+  components: z.array(uiComponentSchema).describe('UI 组件列表，0-3 个'),
 });
 
 export type AIUIResponse = z.infer<typeof aiUIResponseSchema>;
