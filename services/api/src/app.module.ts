@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { DocumentModule } from './document/document.module';
+import { EmbeddingModule } from './embedding/embedding.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { DocumentModule } from './document/document.module';
     AuthModule,
     ConversationModule,
     DocumentModule,
+    EmbeddingModule,
   ],
   controllers: [AppController],
   providers: [],

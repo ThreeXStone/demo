@@ -13,6 +13,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { DocumentService } from './document.service';
 import { ChunkService } from './chunk.service';
+import { EmbeddingService } from '../embedding/embedding.service';
 
 @Controller('api/documents')
 @UseGuards(JwtAuthGuard)
@@ -20,6 +21,7 @@ export class DocumentController {
   constructor(
     private readonly documentService: DocumentService,
     private readonly chunkService: ChunkService,
+    private readonly embeddingService: EmbeddingService,
   ) {}
 
   @Post('upload')
@@ -42,8 +44,17 @@ export class DocumentController {
   }
 
   @Post(':id/process')
-  async process(@Param('id') id: string) {
-    return this.chunkService.chunkDocument(id);
+  async process(@Param('id') id: string, @Request() req: any) {
+    // 权限校验
+    await this.documentService.findById(id, req.user.userId);
+
+    // Step 1: 解析 + 分块
+    const { chunkCount } = await this.chunkService.chunkDocument(id);
+
+    // Step 2: 向量化
+    const { embedded } = await this.embeddingService.embedChunks(id);
+
+    return { documentId: id, chunkCount, embedded, status: 'completed' };
   }
 
   @Delete(':id')
