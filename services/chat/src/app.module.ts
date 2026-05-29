@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { PrismaModule } from './prisma/prisma.module';
+import { UIProtocolModule } from './llm/ui-protocol/ui-protocol.module';
 
 @Module({
   imports: [
@@ -8,7 +8,7 @@ import { PrismaModule } from './prisma/prisma.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
-    PrismaModule,
+    UIProtocolModule,
   ],
   controllers: [],
   providers: [],
