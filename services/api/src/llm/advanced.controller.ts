@@ -1,8 +1,9 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Request } from '@nestjs/common';
 import { AdvancedAnalysisService } from './advanced-analysis.service';
+import { JwtAuthGuard } from '../auth/jwt.guard';
 
 interface AnalyzeRequest {
-  sessionId: string;
+  conversationId: string;
   input: string;
 }
 
@@ -12,8 +13,8 @@ export class AdvancedController {
 
   @Post('analyze')
   @HttpCode(HttpStatus.OK)
-  async executeAnalyze(@Body() body: AnalyzeRequest) {
-    const result = await this.advancedAnalysisService.analyze(body.sessionId, body.input);
-    return result;
+  @UseGuards(JwtAuthGuard)
+  async executeAnalyze(@Request() req: any, @Body() body: AnalyzeRequest) {
+    return this.advancedAnalysisService.analyze(req.user.userId, body.conversationId, body.input);
   }
 }
