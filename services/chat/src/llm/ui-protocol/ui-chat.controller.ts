@@ -8,9 +8,9 @@ function formatSSE(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-function getModel(config: ConfigService) {
+function getModel(config: ConfigService, modelName?: string) {
   return new ChatOpenAI({
-    model: config.get('LLM_MODEL') || 'deepseek-v4-pro',
+    model: modelName || config.get('LLM_MODEL') || 'deepseek-v4-pro',
     temperature: 0.3,
     maxTokens: 2048,
     timeout: 25_000,
@@ -101,7 +101,7 @@ export class UIChatController {
 
   @Post('analyze')
   async analyze(
-    @Body() body: { sessionId: string; input: string; retrievedContext?: string },
+    @Body() body: { sessionId: string; input: string; retrievedContext?: string; model?: string },
     @Req() req: any,
     @Res() res: any,
   ) {
@@ -121,7 +121,7 @@ export class UIChatController {
     ];
 
     try {
-      const model = getModel(this.config);
+      const model = getModel(this.config, body.model);
 
       // progress: start
       res.write(formatSSE({
