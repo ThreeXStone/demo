@@ -74,6 +74,11 @@ export default function ComponentRenderer({ component, onAction }: Props) {
         </div>
       );
     default:
-      return null;
+      console.warn(`Unknown component type: ${(component as any).type}`);
+      return (
+        <div className="px-3 py-2 bg-zinc-800/50 rounded-lg text-xs text-zinc-500">
+          [不支持的组件类型: {(component as any).type}]
+        </div>
+      );
   }
 }
