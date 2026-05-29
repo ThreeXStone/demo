@@ -33,11 +33,8 @@ export default function AIChatContainer() {
       const ctrl = new AbortController();
       abortRef.current = ctrl;
 
-      // Auto-detect: analysis requests go to LangGraph pipeline
-      const isAnalysis = /分析|评估|评审|需求|功能|开发|设计|方案/.test(text) && text.length > 15;
-      const endpoint = isAnalysis ? '/api/ui-chat/analyze' : '/api/ui-chat/chat/stream';
-
-      const resp = await fetch(endpoint, {
+      // 全部输入经 LangGraph classifier 分流: analyze → 5节点管道 / query → 快速查询 / chat → 日常对话
+      const resp = await fetch('/api/ui-chat/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, input }),
