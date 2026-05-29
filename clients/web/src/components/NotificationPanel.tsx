@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { getNotifications, type NotificationEvent } from "@/lib/api";
 
 const typeConfig: Record<string, { icon: string; color: string }> = {
@@ -21,36 +21,44 @@ function timeAgo(dateStr: string): string {
 
 export default function NotificationPanel() {
   const [events, setEvents] = useState<NotificationEvent[]>([]);
-  const [lastSeen, setLastSeen] = useState<string>("");
   const [unreadCount, setUnreadCount] = useState(0);
   const [open, setOpen] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSeenRef = useRef<string>("");
+  const openRef = useRef(false);
 
-  const poll = useCallback(async () => {
-    try {
-      const newEvents = await getNotifications(lastSeen || undefined);
-      if (newEvents.length > 0) {
-        setEvents((prev) => [...newEvents, ...prev].slice(0, 100));
-        setLastSeen(newEvents[0].createdAt);
-        if (!open) {
-          setUnreadCount((c) => c + newEvents.length);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }, [lastSeen, open]);
+  // keep openRef in sync
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
 
   useEffect(() => {
-    getNotifications().then((evts) => {
-      if (evts.length > 0) {
-        setEvents(evts.slice(0, 100));
-        setLastSeen(evts[0].createdAt);
+    let timer: ReturnType<typeof setInterval>;
+
+    const poll = async () => {
+      try {
+        const since = lastSeenRef.current || undefined;
+        const newEvents = await getNotifications(since);
+        if (newEvents.length > 0) {
+          lastSeenRef.current = newEvents[0].createdAt;
+          setEvents((prev) => {
+            const existingIds = new Set(prev.map((e) => e.id));
+            const unique = newEvents.filter((e) => !existingIds.has(e.id));
+            return [...unique, ...prev].slice(0, 100);
+          });
+          if (!openRef.current) {
+            setUnreadCount((c) => c + newEvents.length);
+          }
+        }
+      } catch {
+        // ignore
       }
-    });
-    timerRef.current = setInterval(poll, 3000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, []);
+    };
+
+    // 首次加载
+    poll();
+    timer = setInterval(poll, 3000);
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleOpen = () => {
     setOpen(true);
