@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { sendMessage, sendAction } from '@/lib/api';
+import { uiChat, uiAction } from '@/lib/api';
 import type { ChatMessage, UIComponent } from '@/lib/types';
 import ComponentRenderer from './ComponentRenderer';
 
@@ -26,7 +26,7 @@ export default function AIChatContainer() {
     setMessages((prev) => [...prev, userMsg]);
 
     try {
-      const resp = await sendMessage(sessionId, text);
+      const resp = await uiChat(sessionId, text);
       const aiMsg: ChatMessage = {
         role: 'ai',
         content: resp.message,
@@ -46,7 +46,7 @@ export default function AIChatContainer() {
   const handleAction = async (component: UIComponent, action: Record<string, unknown>) => {
     setLoading(true);
     try {
-      const resp = await sendAction(sessionId, {
+      const resp = await uiAction(sessionId, {
         componentType: component.type,
         payload: action,
       });
