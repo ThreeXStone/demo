@@ -32,7 +32,9 @@ export class OrchestratorService {
       // 第一步：抽取
       this.logger.log('[extractAgent] 开始执行...');
       const extractResult = await extractAgent.invoke({ input });
-      const parsed = JSON.parse(extractResult);
+      // DeepSeek 输出可能被 ```json 代码块包裹，先提取
+      const json = extractResult.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
+      const parsed = JSON.parse(json || extractResult);
       this.logger.log(`[extractAgent] 完成，结果: orderId=${parsed.orderId}, requestType=${parsed.requestType}, isUnopened=${parsed.isUnopened}`);
 
       // 检查关键字段
