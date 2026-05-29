@@ -40,21 +40,14 @@ export interface AuthResult {
   user: { id: string; email: string; name: string | null };
 }
 
-export async function login(
-  email: string,
-  password: string
-): Promise<AuthResult> {
+export async function login(email: string, password: string): Promise<AuthResult> {
   return request("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
 }
 
-export async function register(
-  email: string,
-  password: string,
-  name?: string
-): Promise<AuthResult> {
+export async function register(email: string, password: string, name?: string): Promise<AuthResult> {
   return request("/api/auth/register", {
     method: "POST",
     body: JSON.stringify({ email, password, name }),
@@ -89,16 +82,20 @@ export async function createConversation(title?: string): Promise<Conversation> 
   });
 }
 
-export async function getMessages(
-  conversationId: string
-): Promise<Message[]> {
+export async function getMessages(conversationId: string): Promise<Message[]> {
   return request(`/api/conversations/${conversationId}/messages`);
 }
 
 export async function sendMessage(
   conversationId: string,
   input: string
-): Promise<{ output: string }> {
+): Promise<{
+  report?: string;
+  usedAgents: string[];
+  retrievedDocuments: { content: string; score: number }[];
+  status?: string;
+  clarificationQuestions?: string[];
+}> {
   return request(`/api/conversations/${conversationId}/chat`, {
     method: "POST",
     body: JSON.stringify({ input }),
@@ -106,9 +103,7 @@ export async function sendMessage(
 }
 
 export async function deleteConversation(conversationId: string): Promise<void> {
-  return request(`/api/conversations/${conversationId}`, {
-    method: "DELETE",
-  });
+  return request(`/api/conversations/${conversationId}`, { method: "DELETE" });
 }
 
 // --- Documents ---
@@ -128,15 +123,9 @@ export interface Document {
 
 async function uploadRequest(path: string, body: FormData) {
   const token = getToken();
-  const headers: HeadersInit = token
-    ? { Authorization: `Bearer ${token}` }
-    : {};
+  const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
 
-  const res = await fetch(path, {
-    method: "POST",
-    headers,
-    body,
-  });
+  const res = await fetch(path, { method: "POST", headers, body });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -166,4 +155,20 @@ export async function deleteDocument(id: string): Promise<void> {
 
 export async function processDocument(id: string): Promise<{ chunkCount: number }> {
   return request(`/api/documents/${id}/process`, { method: "POST" });
+}
+
+// --- Notifications ---
+
+export interface NotificationEvent {
+  id: string;
+  userId: string;
+  type: "upload" | "process" | "embed" | "complete" | "error";
+  message: string;
+  details?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export async function getNotifications(since?: string): Promise<NotificationEvent[]> {
+  const params = since ? `?since=${encodeURIComponent(since)}` : "";
+  return request(`/api/notifications${params}`);
 }

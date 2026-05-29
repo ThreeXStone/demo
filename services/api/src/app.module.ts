@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { DocumentModule } from './document/document.module';
 import { EmbeddingModule } from './embedding/embedding.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { EmbeddingModule } from './embedding/embedding.module';
     ConversationModule,
     DocumentModule,
     EmbeddingModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [],

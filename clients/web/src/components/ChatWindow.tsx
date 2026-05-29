@@ -45,12 +45,13 @@ export default function ChatWindow({ conversationId }: Props) {
     setMessages((prev) => [...prev, userMsg]);
 
     try {
-      const { output } = await sendMessage(conversationId, text);
+      const result = await sendMessage(conversationId, text);
+      const responseContent = result.report || result.clarificationQuestions?.join("\n") || "分析完成";
       const aiMsg: Message = {
         id: `temp-${Date.now()}-ai`,
         conversationId,
         role: "ai",
-        content: output,
+        content: responseContent,
         createdAt: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, aiMsg]);
@@ -69,49 +70,72 @@ export default function ChatWindow({ conversationId }: Props) {
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-        {messages.length === 0 && !error && (
-          <div className="flex items-center justify-center h-full text-zinc-500 text-sm">
-            开始对话吧
-          </div>
-        )}
-        {error && (
-          <div className="bg-red-900/30 border border-red-800 text-red-300 rounded-lg px-4 py-3 text-sm">
-            {error}
-          </div>
-        )}
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
-        ))}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-zinc-800 rounded-xl px-4 py-3 text-zinc-400 text-sm">
-              思考中...
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="max-w-3xl mx-auto space-y-6">
+          {messages.length === 0 && !error && (
+            <div className="flex flex-col items-center justify-center h-full pt-24">
+              <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-4">
+                <svg className="w-8 h-8 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
+                </svg>
+              </div>
+              <p className="text-zinc-500 text-sm">开始对话吧</p>
             </div>
-          </div>
-        )}
-        <div ref={scrollRef} />
+          )}
+          {error && (
+            <div className="bg-red-950/30 border border-red-900/50 text-red-400 rounded-xl px-4 py-3 text-sm">
+              {error}
+            </div>
+          )}
+          {messages.map((msg) => (
+            <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
+          ))}
+          {loading && (
+            <div className="flex items-center gap-3">
+              <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center">
+                <span className="text-xs text-indigo-400">AI</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-4 py-3 rounded-2xl rounded-tl-md bg-zinc-800/80 border border-zinc-800">
+                <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+            </div>
+          )}
+          <div ref={scrollRef} />
+        </div>
       </div>
 
-      <div className="border-t border-zinc-800 px-4 py-3">
-        <div className="flex gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
-            rows={2}
-            disabled={loading}
-            className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500 resize-none disabled:opacity-50"
-          />
-          <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="self-end px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            发送
-          </button>
+      {/* Input */}
+      <div className="border-t border-zinc-800/60 px-6 py-4">
+        <div className="max-w-3xl mx-auto">
+          <div className="flex items-end gap-3 bg-zinc-900 border border-zinc-800 rounded-2xl px-4 py-3 focus-within:border-zinc-700 transition-colors">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="输入消息... (Enter 发送)"
+              rows={1}
+              disabled={loading}
+              className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none resize-none"
+              style={{ maxHeight: "120px" }}
+              onInput={(e) => {
+                const target = e.target as HTMLTextAreaElement;
+                target.style.height = "auto";
+                target.style.height = Math.min(target.scrollHeight, 120) + "px";
+              }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-500 text-white hover:bg-indigo-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>

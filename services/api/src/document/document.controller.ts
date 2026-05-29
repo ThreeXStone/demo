@@ -14,6 +14,7 @@ import { JwtAuthGuard } from '../auth/jwt.guard';
 import { DocumentService } from './document.service';
 import { ChunkService } from './chunk.service';
 import { EmbeddingService } from '../embedding/embedding.service';
+import { NotificationService } from '../notification/notification.service';
 
 @Controller('api/documents')
 @UseGuards(JwtAuthGuard)
@@ -22,6 +23,7 @@ export class DocumentController {
     private readonly documentService: DocumentService,
     private readonly chunkService: ChunkService,
     private readonly embeddingService: EmbeddingService,
+    private readonly notifications: NotificationService,
   ) {}
 
   @Post('upload')
@@ -30,7 +32,14 @@ export class DocumentController {
     @UploadedFile() file: Express.Multer.File,
     @Request() req: any,
   ) {
-    return this.documentService.upload(req.user.userId, file);
+    const doc = await this.documentService.upload(req.user.userId, file);
+    this.notifications.emit({
+      userId: req.user.userId,
+      type: 'upload',
+      message: `文件上传成功: ${doc.originalName}`,
+      details: { documentId: doc.id, fileName: doc.originalName, size: doc.size },
+    });
+    return doc;
   }
 
   @Get()
@@ -45,16 +54,51 @@ export class DocumentController {
 
   @Post(':id/process')
   async process(@Param('id') id: string, @Request() req: any) {
-    // 权限校验
-    await this.documentService.findById(id, req.user.userId);
+    const doc = await this.documentService.findById(id, req.user.userId);
+    const userId = req.user.userId;
 
-    // Step 1: 解析 + 分块
-    const { chunkCount } = await this.chunkService.chunkDocument(id);
+    this.notifications.emit({
+      userId,
+      type: 'process',
+      message: `开始处理: ${doc.originalName}`,
+      details: { documentId: id },
+    });
 
-    // Step 2: 向量化
-    const { embedded } = await this.embeddingService.embedChunks(id);
+    try {
+      const { chunkCount } = await this.chunkService.chunkDocument(id);
+      this.notifications.emit({
+        userId,
+        type: 'process',
+        message: `分块完成: ${chunkCount} 个文本块`,
+        details: { documentId: id, chunkCount },
+      });
 
-    return { documentId: id, chunkCount, embedded, status: 'completed' };
+      this.notifications.emit({
+        userId,
+        type: 'embed',
+        message: `正在向量化 ${chunkCount} 个文本块...`,
+        details: { documentId: id, chunkCount },
+      });
+
+      const { embedded } = await this.embeddingService.embedChunks(id);
+
+      this.notifications.emit({
+        userId,
+        type: 'complete',
+        message: `处理完成: ${doc.originalName}，共 ${embedded} 个向量`,
+        details: { documentId: id, chunkCount, embedded },
+      });
+
+      return { documentId: id, chunkCount, embedded, status: 'completed' };
+    } catch (err) {
+      this.notifications.emit({
+        userId,
+        type: 'error',
+        message: `处理失败: ${doc.originalName} - ${(err as Error).message}`,
+        details: { documentId: id, error: (err as Error).message },
+      });
+      throw err;
+    }
   }
 
   @Delete(':id')

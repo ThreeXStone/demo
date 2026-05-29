@@ -38,67 +38,77 @@ export default function LoginForm({ onSuccess }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm mx-4 bg-zinc-900 border border-zinc-700 rounded-xl p-6 space-y-4"
-      >
-        <h2 className="text-lg font-semibold text-zinc-100">
-          {mode === "login" ? "登录" : "注册"}
-        </h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#09090b]">
+      <div className="w-full max-w-sm mx-4">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <h1 className="text-xl font-semibold text-zinc-100">AI Chat</h1>
+          <p className="text-sm text-zinc-500 mt-1">智能对话分析平台</p>
+        </div>
 
-        {mode === "register" && (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {mode === "register" && (
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="昵称（选填）"
+              className="w-full px-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
+            />
+          )}
+
           <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="昵称（选填）"
-            className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="邮箱"
+            autoComplete="email"
+            className="w-full px-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
           />
-        )}
 
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="邮箱"
-          autoComplete="email"
-          className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500"
-        />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="密码"
+            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            className="w-full px-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors"
+          />
 
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="密码"
-          autoComplete={mode === "login" ? "current-password" : "new-password"}
-          className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500"
-        />
+          {error && (
+            <div className="bg-red-950/30 border border-red-900/50 text-red-400 rounded-xl px-4 py-2 text-sm">
+              {error}
+            </div>
+          )}
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50"
-        >
-          {loading ? "请稍候..." : mode === "login" ? "登录" : "注册"}
-        </button>
-
-        <p className="text-center text-sm text-zinc-400">
-          {mode === "login" ? "没有账号？" : "已有账号？"}
           <button
-            type="button"
-            onClick={() => {
-              setMode(mode === "login" ? "register" : "login");
-              setError("");
-            }}
-            className="ml-1 text-blue-400 hover:text-blue-300"
+            type="submit"
+            disabled={loading}
+            className="w-full py-2.5 bg-indigo-500 text-white rounded-xl hover:bg-indigo-400 transition-colors text-sm font-medium disabled:opacity-50"
           >
-            {mode === "login" ? "注册" : "登录"}
+            {loading ? "请稍候..." : mode === "login" ? "登录" : "注册"}
           </button>
-        </p>
-      </form>
+
+          <p className="text-center text-sm text-zinc-500">
+            {mode === "login" ? "没有账号？" : "已有账号？"}
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === "login" ? "register" : "login");
+                setError("");
+              }}
+              className="ml-1 text-indigo-400 hover:text-indigo-300 transition-colors"
+            >
+              {mode === "login" ? "注册" : "登录"}
+            </button>
+          </p>
+        </form>
+      </div>
     </div>
   );
 }
