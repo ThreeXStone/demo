@@ -51,13 +51,12 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
   }, [convId]);
 
   // ====== RAG Chat ======
-  const handleRagChat = async (text: string) => {
+  const handleRagChat = async (text: string, onNewConv?: (id: string) => void) => {
     let cid = convId;
     if (!cid) {
       const conv = await createConversation(text.slice(0, 20));
       cid = conv.id;
-      // reload page sidebar by refreshing
-      window.location.reload();
+      onNewConv?.(cid);
     }
     const result = await sendMessage(cid, text);
     const content = result.report || result.clarificationQuestions?.join('\n') || '分析完成';
@@ -147,7 +146,10 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
 
     try {
       const aiMsg = route === 'rag'
-        ? await handleRagChat(text)
+        ? await handleRagChat(text, (newId) => {
+            // Update local state without page reload
+            setMessages((prev) => prev.filter((_, i) => i < prev.length - 1)); // remove temp user msg, will be re-added below
+          })
         : await handleLangGraph(text, ctrl);
 
       if (loadingRef.current) {
