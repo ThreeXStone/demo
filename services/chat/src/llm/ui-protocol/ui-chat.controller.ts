@@ -13,10 +13,12 @@ function getModel(config: ConfigService) {
     model: config.get('LLM_MODEL') || 'deepseek-v4-pro',
     temperature: 0.3,
     maxTokens: 2048,
+    timeout: 25_000,
     apiKey: config.get('OPENAI_API_KEY'),
-    configuration: config.get('OPENAI_BASE_URL')
-      ? { baseURL: config.get('OPENAI_BASE_URL') }
-      : undefined,
+    configuration: {
+      baseURL: config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
+      timeout: 25_000,
+    },
   });
 }
 
