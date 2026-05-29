@@ -185,3 +185,12 @@ cd services/api && bunx ts-node src/main.ts
 - ❌ 错误做法：`new PrismaClient()` 无参或 `super({ datasources: { db: { url } } })`
   ✅ 正确做法：`super({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) })`
   📌 原因：Prisma v7 移除内嵌引擎，必须通过 `@prisma/adapter-pg` 提供运行时数据库连接
+
+<!-- DeepSeek API 稳定性问题 (2026-05-29) -->
+- ❌ 错误做法：对 DeepSeek 使用 `withStructuredOutput()` 或信任 `model.invoke()` 永远会返回
+  ✅ 正确做法：
+    1. 分类路由用关键词匹配替代 LLM 调用（正则判断意图，不调模型）
+    2. 每个 `model.invoke()` 包裹 try-catch + 兜底消息
+    3. HTTP 层设 25s 超时（`configuration: { timeout: 25_000 }`）
+    4. 默认意图设为 `chat`（避免未识别输入触发 5 节点管道挂死）
+  📌 原因：DeepSeek API 有间歇性"静默挂死"问题——TCP 连接建立后无响应，Promise 既不 resolve 也不 reject，导致 SSE 流永久卡住。`Promise.race` 无法中断底层 HTTP 请求，LangChain 的 `timeout` 参数不会传给 OpenAI SDK
