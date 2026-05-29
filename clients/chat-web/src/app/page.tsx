@@ -5,11 +5,11 @@ import { hasToken, clearToken } from "@/lib/api";
 import LoginForm from "@/components/LoginForm";
 import ConversationList from "@/components/ConversationList";
 import ChatWindow from "@/components/ChatWindow";
-import DocumentPanel from "@/components/DocumentPanel";
+import SidebarDocs from "@/components/SidebarDocs";
 import NotificationPanel from "@/components/NotificationPanel";
 import AIChatContainer from "@/components/ai-ui/AIChatContainer";
 
-type Tab = "chat" | "ui" | "docs";
+type Tab = "chat" | "ui";
 
 export default function Home() {
   const [authorized, setAuthorized] = useState(hasToken());
@@ -23,20 +23,13 @@ export default function Home() {
   }, []);
 
   const handleNew = useCallback(() => { setChatKey((k) => k + 1); }, []);
-
   const handleLogout = () => { clearToken(); setAuthorized(false); setActiveId(null); };
 
   if (!authorized) return <LoginForm onSuccess={() => setAuthorized(true)} />;
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "chat", label: "对话" },
-    { key: "ui", label: "UI 助手" },
-    { key: "docs", label: "知识库" },
-  ];
-
   return (
     <div className="flex h-screen bg-[#09090b] text-zinc-100">
-      {/* Left Sidebar */}
+      {/* Left Sidebar: Conversations + Knowledge Base */}
       <div className="w-64 shrink-0 border-r border-zinc-800/60 bg-[#0c0c10] flex flex-col">
         <div className="px-4 py-3.5 border-b border-zinc-800/60 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -49,30 +42,33 @@ export default function Home() {
           </div>
           <button onClick={handleLogout} className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">退出</button>
         </div>
-        <div className="flex-1 min-h-0">
-          <ConversationList activeId={activeId} onSelect={handleSelect} onNew={handleNew} />
+
+        {/* Conversations (top) */}
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="flex-1 min-h-0">
+            <ConversationList activeId={activeId} onSelect={handleSelect} onNew={handleNew} />
+          </div>
+
+          {/* Knowledge Base (bottom, fixed height) */}
+          <div className="border-t border-zinc-800/60 h-52">
+            <SidebarDocs />
+          </div>
         </div>
       </div>
 
       {/* Main Area */}
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Tabs */}
         <div className="flex items-center border-b border-zinc-800/60 bg-[#09090b] px-2">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`relative px-4 py-3 text-sm font-medium transition-colors ${
-                tab === t.key ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {t.label}
-              {tab === t.key && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-indigo-500 rounded-full" />}
-            </button>
-          ))}
+          <button onClick={() => setTab("chat")} className={`relative px-4 py-3 text-sm font-medium transition-colors ${tab === "chat" ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}>
+            对话
+            {tab === "chat" && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-indigo-500 rounded-full" />}
+          </button>
+          <button onClick={() => setTab("ui")} className={`relative px-4 py-3 text-sm font-medium transition-colors ${tab === "ui" ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}>
+            UI 助手
+            {tab === "ui" && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-indigo-500 rounded-full" />}
+          </button>
         </div>
 
-        {/* Content */}
         <div className="flex-1 min-h-0">
           {tab === "chat" && (
             activeId ? <ChatWindow key={chatKey} conversationId={activeId} /> : (
@@ -85,7 +81,6 @@ export default function Home() {
             )
           )}
           {tab === "ui" && <AIChatContainer />}
-          {tab === "docs" && <DocumentPanel />}
         </div>
       </div>
 
