@@ -76,7 +76,8 @@ export default function Home() {
                 <svg className="w-12 h-12 mb-4 text-zinc-800" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
-                <p className="text-sm">选择或创建一个会话开始对话</p>
+                <p className="text-sm text-zinc-400">你好！有什么可以帮你的吗？</p>
+                <p className="text-xs text-zinc-600 mt-2">选择已有会话或创建新对话</p>
               </div>
             )
           )}
