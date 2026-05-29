@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   sendMessage, createConversation, uiAction,
+  getMessages,
   type Message,
 } from '@/lib/api';
 import type { UIComponent, StreamMessage, ProgressPayload } from '@/lib/types';
@@ -21,9 +22,10 @@ const MODELS = [
   { value: 'gpt-5.4', label: 'GPT-5' },
 ];
 
-export default function UnifiedChat() {
+interface Props { conversationId: string | null; }
+
+export default function UnifiedChat({ conversationId: convId }: Props) {
   const [sessionId] = useState(() => `u-${Date.now()}`);
-  const [convId, setConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -37,9 +39,15 @@ export default function UnifiedChat() {
 
   useEffect(() => { loadingRef.current = loading; }, [loading]);
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingContent]);
-
-  // cleanup on unmount
   useEffect(() => () => { loadingRef.current = false; }, []);
+
+  // Load conversation history when convId changes
+  useEffect(() => {
+    if (!convId) { setMessages([]); return; }
+    getMessages(convId).then((rows) => {
+      setMessages(rows.map((r) => ({ role: r.role as 'user' | 'ai', content: r.content })));
+    }).catch(() => {});
+  }, [convId]);
 
   // ====== RAG Chat ======
   const handleRagChat = async (text: string) => {
@@ -47,7 +55,8 @@ export default function UnifiedChat() {
     if (!cid) {
       const conv = await createConversation(text.slice(0, 20));
       cid = conv.id;
-      setConvId(cid);
+      // reload page sidebar by refreshing
+      window.location.reload();
     }
     const result = await sendMessage(cid, text);
     const content = result.report || result.clarificationQuestions?.join('\n') || '分析完成';

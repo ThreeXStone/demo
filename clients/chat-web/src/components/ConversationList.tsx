@@ -36,7 +36,8 @@ export default function ConversationList({ activeId, onSelect, onNew }: Props) {
 
   const handleCreate = async () => {
     try {
-      const conv = await createConversation("新会话");
+      const num = conversations.length + 1;
+      const conv = await createConversation(`对话-${num}`);
       setConversations((prev) => [conv, ...prev]);
       onSelect(conv.id);
       onNew();

@@ -4,21 +4,17 @@ import { useState, useCallback } from "react";
 import { hasToken, clearToken } from "@/lib/api";
 import LoginForm from "@/components/LoginForm";
 import ConversationList from "@/components/ConversationList";
-import ChatWindow from "@/components/ChatWindow";
 import SidebarDocs from "@/components/SidebarDocs";
 import NotificationPanel from "@/components/NotificationPanel";
-import AIChatContainer from "@/components/ai-ui/AIChatContainer";
-
-type Tab = "chat" | "ui";
+import UnifiedChat from "@/components/UnifiedChat";
 
 export default function Home() {
   const [authorized, setAuthorized] = useState(hasToken());
   const [activeId, setActiveId] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState(0);
-  const [tab, setTab] = useState<Tab>("chat");
 
   const handleSelect = useCallback((id: string) => {
-    if (id) { setActiveId(id); setChatKey((k) => k + 1); setTab("chat"); }
+    if (id) { setActiveId(id); setChatKey((k) => k + 1); }
     else { setActiveId(null); }
   }, []);
 
@@ -29,7 +25,7 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-[#09090b] text-zinc-100">
-      {/* Left Sidebar: Conversations + Knowledge Base */}
+      {/* Left Sidebar */}
       <div className="w-64 shrink-0 border-r border-zinc-800/60 bg-[#0c0c10] flex flex-col">
         <div className="px-4 py-3.5 border-b border-zinc-800/60 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -42,47 +38,19 @@ export default function Home() {
           </div>
           <button onClick={handleLogout} className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">退出</button>
         </div>
-
-        {/* Conversations (top) */}
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex-1 min-h-0">
             <ConversationList activeId={activeId} onSelect={handleSelect} onNew={handleNew} />
           </div>
-
-          {/* Knowledge Base (bottom, fixed height) */}
           <div className="border-t border-zinc-800/60 h-52">
             <SidebarDocs />
           </div>
         </div>
       </div>
 
-      {/* Main Area */}
-      <div className="flex flex-col flex-1 min-w-0">
-        <div className="flex items-center border-b border-zinc-800/60 bg-[#09090b] px-2">
-          <button onClick={() => setTab("chat")} className={`relative px-4 py-3 text-sm font-medium transition-colors ${tab === "chat" ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}>
-            对话
-            {tab === "chat" && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-indigo-500 rounded-full" />}
-          </button>
-          <button onClick={() => setTab("ui")} className={`relative px-4 py-3 text-sm font-medium transition-colors ${tab === "ui" ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}>
-            UI 助手
-            {tab === "ui" && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-indigo-500 rounded-full" />}
-          </button>
-        </div>
-
-        <div className="flex-1 min-h-0">
-          {tab === "chat" && (
-            activeId ? <ChatWindow key={chatKey} conversationId={activeId} /> : (
-              <div className="h-full flex flex-col items-center justify-center text-zinc-600">
-                <svg className="w-12 h-12 mb-4 text-zinc-800" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <p className="text-sm text-zinc-400">你好！有什么可以帮你的吗？</p>
-                <p className="text-xs text-zinc-600 mt-2">选择已有会话或创建新对话</p>
-              </div>
-            )
-          )}
-          {tab === "ui" && <AIChatContainer />}
-        </div>
+      {/* Main Chat Area */}
+      <div className="flex-1 min-w-0">
+        <UnifiedChat conversationId={activeId} />
       </div>
 
       <NotificationPanel />
