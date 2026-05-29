@@ -138,15 +138,14 @@ const createNodes = (model: BaseChatModel) => ({
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
-      const structured = model.withStructuredOutput(intentSchema, {
-        name: 'classify_intent',
-      });
-      const result = await structured.invoke([
+      const result = await model.invoke([
         { role: 'system', content: CLASSIFIER_PROMPT },
         { role: 'user', content: state.input },
       ]);
-      const parsed = result as z.infer<typeof intentSchema>;
-      return { intent: parsed.intent };
+      const text = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+      const parsed = parseJson(text, { intent: keywordClassify(state.input), reasoning: 'fallback' });
+      const validated = intentSchema.parse(parsed);
+      return { intent: validated.intent };
     } catch {
       return { intent: keywordClassify(state.input) };
     }
