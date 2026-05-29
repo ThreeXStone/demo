@@ -1,26 +1,24 @@
 import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
-import { UIResponseService } from './ui-response.service';
+import { UIFlowService } from './ui-flow.service';
 
 @Controller('api/ui-chat')
 export class UIChatController {
-  constructor(private readonly uiResponse: UIResponseService) {}
+  constructor(private readonly uiFlow: UIFlowService) {}
 
   @Post('chat')
   @HttpCode(HttpStatus.OK)
-  async chat(
-    @Body('sessionId') sessionId: string,
-    @Body('input') input: string,
-    @Body('context') context?: string,
-  ) {
-    return this.uiResponse.generateUIResponse(input, undefined, context);
+  async chat(@Body() body: { sessionId: string; input: string }) {
+    return this.uiFlow.handleInput(body.sessionId, body.input);
   }
 
   @Post('action')
   @HttpCode(HttpStatus.OK)
   async action(
-    @Body('sessionId') sessionId: string,
-    @Body('action') action: any,
+    @Body() body: {
+      sessionId: string;
+      action: { componentType?: string; payload?: Record<string, unknown> };
+    },
   ) {
-    return this.uiResponse.handleAction(action, sessionId);
+    return this.uiFlow.handleAction(body.sessionId, body.action);
   }
 }

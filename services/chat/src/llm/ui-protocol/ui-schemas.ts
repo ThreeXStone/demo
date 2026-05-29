@@ -91,6 +91,7 @@ const tableResponseSchema = z.object({
 
 const actionButtonsResponseSchema = z.object({
   type: z.literal('action_buttons'),
+  title: z.string().optional().describe('按钮组标题'),
   buttons: z
     .array(
       z.object({
