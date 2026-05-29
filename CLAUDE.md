@@ -145,3 +145,8 @@ cd services/api && bunx ts-node src/main.ts
 - ❌ 错误做法：`file.originalname` 直接用于文件名存储和入库
   ✅ 正确做法：`const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8')`
   📌 原因：Multer 默认使用 latin1 解码 multipart 中的文件名，中文等非 ASCII 字符会乱码，需要手动转为 utf8
+
+<!-- @xenova/transformers 模型加载 (2026-05-29) -->
+- ❌ 错误做法：`pipeline('feature-extraction', 'Xenova/...')` 不设任何选项，依赖网络自动下载
+  ✅ 正确做法：先用 curl/hf-mirror 下载 ONNX 模型到 `node_modules/@xenova/transformers/models/<model-name>/`，再用 `local_files_only: true`
+  📌 原因：`@xenova/transformers` 内部 fetch 不走系统代理，网络受限环境下模型下载失败；模型缓存路径不是 `~/.cache/huggingface`，而是 `node_modules/@xenova/transformers/models/`
