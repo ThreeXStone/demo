@@ -6,7 +6,6 @@ import LoginForm from "@/components/LoginForm";
 import ConversationList from "@/components/ConversationList";
 import SidebarDocs from "@/components/SidebarDocs";
 import NotificationPanel from "@/components/NotificationPanel";
-import LogPanel from "@/components/LogPanel";
 import UnifiedChat from "@/components/UnifiedChat";
 
 export default function Home() {
@@ -14,7 +13,6 @@ export default function Home() {
   const [authChecked, setAuthChecked] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState(0);
-  const [logOpen, setLogOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
 
   useEffect(() => {
@@ -63,13 +61,11 @@ export default function Home() {
       <div className="flex-1 min-w-0">
         <UnifiedChat
           conversationId={activeId}
-          onToggleLog={() => setLogOpen(!logOpen)}
           onToggleNotif={() => setNotifOpen(!notifOpen)}
         />
       </div>
 
       <NotificationPanel open={notifOpen} onToggle={() => setNotifOpen(!notifOpen)} />
-      <LogPanel open={logOpen} onToggle={() => setLogOpen(!logOpen)} />
     </div>
   );
 }

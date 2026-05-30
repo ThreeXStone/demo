@@ -27,18 +27,6 @@ export function createClarifyAgent(model: BaseChatModel) {
   ]).pipe(model);
 }
 
-export function createAnalysisAgent(model: BaseChatModel) {
-  return ChatPromptTemplate.fromMessages([
-    ['system', `你是需求分析专家。对需求进行深度分析，包括：
-- 功能范围界定
-- 技术可行性评估
-- 影响范围分析
-- 依赖关系识别
-输出 Markdown 格式的分析报告。`],
-    ['human', '用户输入：{input}\n\n抽取结果：{extractResult}'],
-  ]).pipe(model);
-}
-
 export function createRiskAgent(model: BaseChatModel) {
   return ChatPromptTemplate.fromMessages([
     ['system', `你是风险评估专家。识别需求实现过程中的潜在风险：

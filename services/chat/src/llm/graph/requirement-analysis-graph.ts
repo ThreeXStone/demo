@@ -270,33 +270,11 @@ function createAnalysisSubGraph(model: BaseChatModel) {
     .compile();
 }
 
-// --- Progress Event Type ---
-
-export interface NodeProgressEvent {
-  type: 'node_start' | 'node_end';
-  node: string;
-  displayName: string;
-  duration?: number;
-  error?: string;
-}
 
 // --- Node Factory ---
 
-const NODE_DISPLAY_NAMES: Record<string, string> = {
-  classifier: '意图识别',
-  queryHandler: '信息查询',
-  chatHandler: '普通对话',
-  extractStep: '需求抽取',
-  clarifyStep: '需求澄清',
-  analysisStep: '深度分析',
-  riskStep: '风险评估',
-  summaryStep: '汇总报告',
-};
 
-const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) => void) => {
-  const emit = (type: 'node_start' | 'node_end', node: string, duration?: number, error?: string) => {
-    onNodeEvent?.({ type, node, displayName: NODE_DISPLAY_NAMES[node] || node, duration, error });
-  };
+const createNodes = (model: BaseChatModel) => {
 
   // Timeout wrapper: reject if LLM call exceeds limit
   const LLM_TIMEOUT = 100_000;
@@ -311,39 +289,20 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   };
 
-  const instrument = (name: string, fn: (...args: any[]) => Promise<any>) =>
-    async (...args: any[]) => {
-      const displayName = NODE_DISPLAY_NAMES[name] || name;
-      console.log(`[LangGraph] ${new Date().toISOString()} | NODE_START  | ${name} (${displayName})`);
-      emit('node_start', name);
-      const t0 = Date.now();
-      try {
-        const result = await fn(...args);
-        const elapsed = Date.now() - t0;
-        console.log(`[LangGraph] ${new Date().toISOString()} | NODE_END    | ${name} (${displayName}) | ${elapsed}ms OK`);
-        emit('node_end', name, elapsed);
-        return result;
-      } catch (e) {
-        const elapsed = Date.now() - t0;
-        console.log(`[LangGraph] ${new Date().toISOString()} | NODE_ERROR  | ${name} (${displayName}) | ${elapsed}ms | ${(e as Error).message}`);
-        emit('node_end', name, elapsed, (e as Error).message);
-        throw e;
-      }
-    };
 
   return {
   // ====== Classifier ======
 
-  classifierNode: instrument('classifier', async (
+  classifierNode: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     // DeepSeek 模型 invoke 可能无限挂起，直接使用关键词分类
     return { intent: classifyAndLog(state.input) };
-  }),
+  },
 
   // ====== Fast-Path Handlers (with timeout) ======
 
-  queryHandlerNode: instrument('queryHandler', async (
+  queryHandlerNode: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -359,9 +318,9 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] queryHandler: failed - ${(e as Error).message}`);
       return { queryResponse: '查询服务暂不可用', summary: '查询服务暂不可用' };
     }
-  }),
+  },
 
-  chatHandlerNode: instrument('chatHandler', async (
+  chatHandlerNode: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -377,11 +336,11 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] chatHandler: failed - ${(e as Error).message}`);
       return { chatResponse: '抱歉，服务暂不可用，请稍后再试。', summary: '抱歉，服务暂不可用，请稍后再试。' };
     }
-  }),
+  },
 
   // ====== Analysis Pipeline (with timeout per node) ======
 
-  extractStep: instrument('extractStep', async (
+  extractStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -395,9 +354,9 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] extractStep: failed - ${(e as Error).message}`);
       return { extracted: { title: state.input.slice(0, 50), type: 'functional', priority: 'P2', description: state.input, isComplete: true, missingFields: [] } };
     }
-  }),
+  },
 
-  clarifyStep: instrument('clarifyStep', async (
+  clarifyStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -411,9 +370,9 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] clarifyStep: failed - ${(e as Error).message}`);
       return { clarified: { needsClarification: false, questions: [] } };
     }
-  }),
+  },
 
-  analysisStep: instrument('analysisStep', async (
+  analysisStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -432,9 +391,9 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] analysisStep: failed - ${(e as Error).message}`);
       return { analysisResult: '分析服务暂不可用，请稍后重试。' };
     }
-  }),
+  },
 
-  riskStep: instrument('riskStep', async (
+  riskStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -448,9 +407,9 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] riskStep: failed - ${(e as Error).message}`);
       return { riskResult: '风险评估暂不可用。' };
     }
-  }),
+  },
 
-  summaryStep: instrument('summaryStep', async (
+  summaryStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
@@ -468,7 +427,7 @@ const createNodes = (model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) 
       console.log(`[LangGraph] summaryStep: failed - ${(e as Error).message}`);
       return { summary: '汇总服务暂不可用，请稍后重试。' };
     }
-  }),
+  },
   };
 };
 
@@ -484,8 +443,8 @@ function routeByIntent(state: typeof RequirementAnalysisState.State): string {
 
 // --- Graph Factory ---
 
-export function createAnalysisGraph(model: BaseChatModel, onNodeEvent?: (e: NodeProgressEvent) => void) {
-  const nodes = createNodes(model, onNodeEvent);
+export function createAnalysisGraph(model: BaseChatModel) {
+  const nodes = createNodes(model);
 
   return new StateGraph(RequirementAnalysisState)
     // classifier
@@ -536,13 +495,12 @@ export async function runAnalysisGraph(args: {
   input: string;
   retrievedContext: string;
   model: BaseChatModel;
-  onNodeEvent?: (e: NodeProgressEvent) => void;
 }): Promise<RunAnalysisGraphOutput> {
   console.log(`[LangGraph] ========== GRAPH START ==========`);
   console.log(`[LangGraph] input: "${args.input.slice(0, 100)}"`);
   console.log(`[LangGraph] model: ${(args.model as any).model || 'unknown'}`);
 
-  const graph = createAnalysisGraph(args.model, args.onNodeEvent);
+  const graph = createAnalysisGraph(args.model);
   const t0 = Date.now();
   const result = await graph.invoke({
     input: args.input,

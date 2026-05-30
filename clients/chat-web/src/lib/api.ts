@@ -53,12 +53,6 @@ export async function createConversation(title?: string): Promise<Conversation> 
 export async function getMessages(conversationId: string): Promise<Message[]> {
   return request(`/api/conversations/${conversationId}/messages`);
 }
-export async function sendMessage(conversationId: string, input: string): Promise<{
-  report?: string; usedAgents: string[]; retrievedDocuments: { content: string; score: number }[];
-  status?: string; clarificationQuestions?: string[];
-}> {
-  return request(`/api/conversations/${conversationId}/chat`, { method: "POST", body: JSON.stringify({ input }) });
-}
 export async function saveMessage(conversationId: string, role: string, content: string): Promise<Message> {
   return request(`/api/conversations/${conversationId}/messages`, {
     method: "POST",
@@ -101,24 +95,6 @@ export async function getNotifications(since?: string): Promise<NotificationEven
 
 // --- UI Chat (chat service 3002) ---
 
-/** Trigger LangGraph analysis via SSE. Returns a ReadableStream reader. */
-export function analyzeStream(sessionId: string, input: string): Promise<Response> {
-  return fetch("/api/ui-chat/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, input }),
-  });
-}
-
-export async function uiChat(sessionId: string, input: string): Promise<AIUIResponse> {
-  const res = await fetch("/api/ui-chat/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, input }),
-  });
-  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.message || `HTTP ${res.status}`); }
-  return res.json();
-}
 export async function uiAction(sessionId: string, action: UIAction): Promise<AIUIResponse> {
   const res = await fetch("/api/ui-chat/action", {
     method: "POST",

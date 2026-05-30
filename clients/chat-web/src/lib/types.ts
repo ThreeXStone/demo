@@ -93,11 +93,10 @@ export interface ChatMessage {
 // --- Streaming Types ---
 
 export interface StreamMessage {
-  messageType: 'markdown' | 'ui' | 'progress' | 'node_start' | 'node_end' | 'done' | 'error';
+  messageType: 'markdown' | 'ui' | 'done' | 'error';
   timestamp: string;
-  payload: MarkdownPayload | UIPayload | ProgressPayload | ErrorPayload | null;
+  payload: MarkdownPayload | UIPayload | ErrorPayload | null;
 }
 export interface MarkdownPayload { content: string; isChunk: boolean; messageId?: string; }
 export interface UIPayload { messageId: string; components: UIComponent[]; thinking?: string; }
-export interface ProgressPayload { agent: string; agentDisplayName: string; step: number; totalSteps: number; status: string; }
 export interface ErrorPayload { code: string; message: string; }

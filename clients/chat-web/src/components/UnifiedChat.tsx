@@ -6,8 +6,7 @@ import {
   getMessages,
   type Message,
 } from '@/lib/api';
-import type { UIComponent, StreamMessage, ProgressPayload } from '@/lib/types';
-import { addLog } from '@/lib/log-store';
+import type { UIComponent, StreamMessage } from '@/lib/types';
 import ComponentRenderer from './ai-ui/ComponentRenderer';
 import ThinkingIndicator from './ai-ui/ThinkingIndicator';
 
@@ -26,11 +25,10 @@ const MODELS = [
 
 interface Props {
   conversationId: string | null;
-  onToggleLog?: () => void;
   onToggleNotif?: () => void;
 }
 
-export default function UnifiedChat({ conversationId: convId, onToggleLog, onToggleNotif }: Props) {
+export default function UnifiedChat({ conversationId: convId, onToggleNotif }: Props) {
   const [sessionId] = useState(() => `u-${Date.now()}`);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -38,7 +36,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
   const [model, setModel] = useState(() =>
     typeof window !== 'undefined' ? localStorage.getItem('preferred_model') || 'deepseek-v4-pro' : 'deepseek-v4-pro'
   );
-  const [progress, setProgress] = useState<ProgressPayload | null>(null);
   const [streamingContent, setStreamingContent] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
@@ -60,10 +57,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
     if (!t) return;
     t.style.height = 'auto';
     t.style.height = Math.min(t.scrollHeight, 200) + 'px';
-  };
-
-  const handleRagChat = async (text: string) => {
-    return handleSSE('/api/ui-chat/analyze', text, new AbortController());
   };
 
   const handleSSE = async (endpoint: string, text: string, ctrl: AbortController): Promise<ChatMsg> => {
@@ -99,20 +92,12 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
           if (!payload) continue;
           try {
             const msg: StreamMessage = JSON.parse(payload);
-            if (msg.messageType === 'progress') {
-              setProgress(msg.payload as ProgressPayload);
-              addLog({ type: 'progress', agent: (msg.payload as any).agent || '', agentDisplayName: (msg.payload as any).agentDisplayName || '', step: (msg.payload as any).step, totalSteps: (msg.payload as any).totalSteps, timestamp: msg.timestamp });
-            } else if (msg.messageType === 'node_start') {
-              addLog({ type: 'node_start', agent: (msg.payload as any).agent || '', agentDisplayName: (msg.payload as any).agentDisplayName || '', timestamp: msg.timestamp });
-            } else if (msg.messageType === 'node_end') {
-              addLog({ type: 'node_end', agent: (msg.payload as any).agent || '', agentDisplayName: (msg.payload as any).agentDisplayName || '', duration: (msg.payload as any).duration, timestamp: msg.timestamp });
-            } else if (msg.messageType === 'markdown') {
+            if (msg.messageType === 'markdown') {
               content += (msg.payload as any).content || '';
               setStreamingContent(content);
             } else if (msg.messageType === 'ui') components = (msg.payload as any).components;
             else if (msg.messageType === 'done') {}
             else if (msg.messageType === 'error') {
-              addLog({ type: 'error', agent: 'system', agentDisplayName: '错误', timestamp: msg.timestamp });
               throw new Error((msg.payload as any).message || 'Stream error');
             }
           } catch (e) {
@@ -134,7 +119,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
     setInput('');
     setLoading(true);
     loadingRef.current = true;
-    setProgress(null);
     setStreamingContent('');
     if (textareaRef.current) { textareaRef.current.style.height = 'auto'; }
 
@@ -165,7 +149,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
     } finally {
       setLoading(false);
       loadingRef.current = false;
-      setProgress(null);
       setStreamingContent('');
     }
   };
@@ -210,17 +193,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-gray-100">
         <span className="text-sm font-medium text-gray-700">对话</span>
         <div className="flex items-center gap-1.5">
-          {onToggleLog && (
-            <button
-              onClick={onToggleLog}
-              className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-              title="执行日志"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </button>
-          )}
           {onToggleNotif && (
             <button
               onClick={onToggleNotif}
@@ -312,7 +284,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleLog, onTog
             </div>
           )}
 
-          {loading && !streamingContent && <ThinkingIndicator progress={progress} />}
+          {loading && !streamingContent && <ThinkingIndicator />}
           <div ref={scrollRef} />
         </div>
       </div>
