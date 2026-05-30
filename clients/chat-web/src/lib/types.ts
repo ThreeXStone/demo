@@ -93,7 +93,7 @@ export interface ChatMessage {
 // --- Streaming Types ---
 
 export interface StreamMessage {
-  messageType: 'markdown' | 'ui' | 'progress' | 'done' | 'error';
+  messageType: 'markdown' | 'ui' | 'progress' | 'node_start' | 'node_end' | 'done' | 'error';
   timestamp: string;
   payload: MarkdownPayload | UIPayload | ProgressPayload | ErrorPayload | null;
 }

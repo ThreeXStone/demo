@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getMessages, sendMessage, type Message } from "@/lib/api";
+import { getMessages, getToken, type Message } from "@/lib/api";
 import MessageBubble from "./MessageBubble";
 
 interface Props {
@@ -13,6 +13,7 @@ export default function ChatWindow({ conversationId }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [progress, setProgress] = useState<{ step: string; message: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,6 +35,7 @@ export default function ChatWindow({ conversationId }: Props) {
     setInput("");
     setLoading(true);
     setError("");
+    setProgress(null);
 
     const userMsg: Message = {
       id: `temp-${Date.now()}`,
@@ -45,20 +47,75 @@ export default function ChatWindow({ conversationId }: Props) {
     setMessages((prev) => [...prev, userMsg]);
 
     try {
-      const result = await sendMessage(conversationId, text);
-      const responseContent = result.report || result.clarificationQuestions?.join("\n") || "分析完成";
-      const aiMsg: Message = {
-        id: `temp-${Date.now()}-ai`,
-        conversationId,
-        role: "ai",
-        content: responseContent,
-        createdAt: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
+      const token = getToken();
+      const res = await fetch("/api/ui-chat/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ sessionId: conversationId, input: text }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
+        throw new Error(err.message || `请求失败: ${res.status}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无法读取响应流");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let aiContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6);
+            try {
+              const data = JSON.parse(dataStr);
+              const { messageType, payload } = data;
+
+              if (messageType === "progress" && payload?.agentDisplayName) {
+                setProgress({
+                  step: payload.agent,
+                  message: `${payload.agentDisplayName} (${payload.step}/${payload.totalSteps})`,
+                });
+              } else if (messageType === "markdown") {
+                aiContent += payload?.content || "";
+              } else if (messageType === "done") {
+                const aiMsg: Message = {
+                  id: `temp-${Date.now()}-ai`,
+                  conversationId,
+                  role: "ai",
+                  content: aiContent || "分析完成",
+                  createdAt: new Date().toISOString(),
+                };
+                setMessages((prev) => [...prev, aiMsg]);
+                setProgress(null);
+              } else if (messageType === "error") {
+                setError(payload?.message || "分析过程出错");
+                setProgress(null);
+              }
+            } catch {
+              // skip malformed JSON
+            }
+          }
+        }
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -92,15 +149,26 @@ export default function ChatWindow({ conversationId }: Props) {
             <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
           ))}
           {loading && (
-            <div className="flex items-center gap-3">
-              <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center">
-                <span className="text-xs text-indigo-400">AI</span>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-3">
+                <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center">
+                  <span className="text-xs text-indigo-400">AI</span>
+                </div>
+                <div className="flex items-center gap-1.5 px-4 py-3 rounded-2xl rounded-tl-md bg-zinc-800/80 border border-zinc-800">
+                  <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 px-4 py-3 rounded-2xl rounded-tl-md bg-zinc-800/80 border border-zinc-800">
-                <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                <span className="w-2 h-2 bg-zinc-600 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-              </div>
+              {progress && (
+                <div className="ml-10 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-zinc-500">
+                  <svg className="w-3 h-3 text-indigo-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>{progress.message}</span>
+                </div>
+              )}
             </div>
           )}
           <div ref={scrollRef} />

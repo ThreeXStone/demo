@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import {
-  sendMessage, createConversation, uiAction,
+  createConversation, saveMessage, uiAction,
   getMessages,
   type Message,
 } from '@/lib/api';
@@ -13,9 +13,10 @@ import ThinkingIndicator from './ai-ui/ThinkingIndicator';
 
 interface ChatMsg { role: 'user' | 'ai'; content: string; components?: UIComponent[]; }
 
-function routeIntent(input: string): 'rag' | 'langgraph' {
-  if (/退货|退款|换货|订单|物流|售后|收货|拆封|商品|保修|发票|投诉/.test(input)) return 'rag';
-  return 'langgraph';
+function routeIntent(input: string): 'query' | 'chat' | 'analyze' {
+  if (/退货|退款|换货|订单|物流|售后|收货|拆封|商品|保修|发票|投诉/.test(input)) return 'query';
+  if (/需求|功能|优化|新增|改进|做一个|开发|登录|注册|模块/.test(input)) return 'analyze';
+  return 'chat';
 }
 
 const MODELS = [
@@ -23,9 +24,13 @@ const MODELS = [
   { value: 'gpt-5.4', label: 'GPT-5' },
 ];
 
-interface Props { conversationId: string | null; }
+interface Props {
+  conversationId: string | null;
+  onToggleLog?: () => void;
+  onToggleNotif?: () => void;
+}
 
-export default function UnifiedChat({ conversationId: convId }: Props) {
+export default function UnifiedChat({ conversationId: convId, onToggleLog, onToggleNotif }: Props) {
   const [sessionId] = useState(() => `u-${Date.now()}`);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -37,35 +42,32 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
   const [streamingContent, setStreamingContent] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { loadingRef.current = loading; }, [loading]);
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingContent]);
   useEffect(() => () => { loadingRef.current = false; }, []);
 
-  // Load conversation history when convId changes
   useEffect(() => {
     if (!convId) { setMessages([]); return; }
     getMessages(convId).then((rows) => {
-      setMessages(rows.map((r) => ({ role: r.role as 'user' | 'ai', content: r.content })));
+      setMessages(rows.map((r) => ({ role: (r.role === 'human' || r.role === 'user') ? 'user' : 'ai', content: r.content })));
     }).catch(() => {});
   }, [convId]);
 
-  // ====== RAG Chat ======
-  const handleRagChat = async (text: string, onNewConv?: (id: string) => void) => {
-    let cid = convId;
-    if (!cid) {
-      const conv = await createConversation(text.slice(0, 20));
-      cid = conv.id;
-      onNewConv?.(cid);
-    }
-    const result = await sendMessage(cid, text);
-    const content = result.report || result.clarificationQuestions?.join('\n') || '分析完成';
-    return { content, components: [] as UIComponent[] };
+  const autoResize = () => {
+    const t = textareaRef.current;
+    if (!t) return;
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 200) + 'px';
   };
 
-  // ====== LangGraph SSE ======
-  const handleLangGraph = async (text: string, ctrl: AbortController): Promise<ChatMsg> => {
-    const resp = await fetch('/api/ui-chat/analyze', {
+  const handleRagChat = async (text: string) => {
+    return handleSSE('/api/ui-chat/analyze', text, new AbortController());
+  };
+
+  const handleSSE = async (endpoint: string, text: string, ctrl: AbortController): Promise<ChatMsg> => {
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, input: text, model }),
@@ -79,8 +81,6 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
     let content = '';
     let components: UIComponent[] | null = null;
     let buffer = '';
-
-    // timeout safety: max 5 minutes
     const startTime = Date.now();
     const MAX_TIME = 300_000;
 
@@ -91,7 +91,6 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // process complete lines
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
         for (const line of lines) {
@@ -111,7 +110,7 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
               content += (msg.payload as any).content || '';
               setStreamingContent(content);
             } else if (msg.messageType === 'ui') components = (msg.payload as any).components;
-            else if (msg.messageType === 'done') { /* handled by stream close */ }
+            else if (msg.messageType === 'done') {}
             else if (msg.messageType === 'error') {
               addLog({ type: 'error', agent: 'system', agentDisplayName: '错误', timestamp: msg.timestamp });
               throw new Error((msg.payload as any).message || 'Stream error');
@@ -126,10 +125,9 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
       reader.cancel().catch(() => {});
     }
 
-    return { content: content || '(空响应)', components: components || undefined };
+    return { role: 'ai', content: content || '(空响应)', components: components || undefined };
   };
 
-  // ====== Send ======
   const handleSend = async () => {
     const text = input.trim();
     if (!text || loading) return;
@@ -138,22 +136,27 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
     loadingRef.current = true;
     setProgress(null);
     setStreamingContent('');
+    if (textareaRef.current) { textareaRef.current.style.height = 'auto'; }
 
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
 
     const route = routeIntent(text);
     const ctrl = new AbortController();
 
-    try {
-      const aiMsg = route === 'rag'
-        ? await handleRagChat(text, (newId) => {
-            // Update local state without page reload
-            setMessages((prev) => prev.filter((_, i) => i < prev.length - 1)); // remove temp user msg, will be re-added below
-          })
-        : await handleLangGraph(text, ctrl);
+    let cid = convId;
+    if (!cid && route !== 'query') {
+      try { const conv = await createConversation(text.slice(0, 20)); cid = conv.id; } catch {}
+    }
 
-      if (loadingRef.current) {
-        setMessages((prev) => [...prev, { role: 'ai', ...aiMsg }]);
+    try {
+      const endpoint = route === 'analyze' ? '/api/ui-chat/chat/stream' : '/api/ui-chat/analyze';
+      const aiMsg = await handleSSE(endpoint, text, ctrl);
+
+      if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+
+      if (cid) {
+        saveMessage(cid, 'human', text).catch(() => {});
+        saveMessage(cid, 'ai', aiMsg.content).catch(() => {});
       }
     } catch (err: any) {
       if (err.name !== 'AbortError' && loadingRef.current) {
@@ -172,6 +175,23 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
     try {
       const resp = await uiAction(sessionId, { componentType: comp.type, payload: action });
       setMessages((prev) => [...prev, { role: 'ai', content: resp.message, components: resp.components }]);
+
+      // 确认提交后触发 LangGraph 深度分析
+      const isConfirm = action.type === 'confirm' && action.confirmed === true;
+      if (isConfirm) {
+        const collectedText = resp.message.replace('分析流程已启动。', '请对上述需求进行深度分析，输出功能分解、用户故事、验收标准和技术复杂度评估。');
+        loadingRef.current = true;
+        const ctrl = new AbortController();
+        try {
+          const aiMsg = await handleSSE('/api/ui-chat/analyze', collectedText, ctrl);
+          if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+          if (convId) saveMessage(convId, 'ai', aiMsg.content).catch(() => {});
+        } catch {
+          if (loadingRef.current) setMessages((prev) => [...prev, { role: 'ai', content: '深度分析请求失败' }]);
+        } finally {
+          loadingRef.current = false;
+        }
+      }
     } catch {
       setMessages((prev) => [...prev, { role: 'ai', content: '操作失败' }]);
     } finally { setLoading(false); }
@@ -181,72 +201,94 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  const handleModelChange = (val: string) => {
-    setModel(val);
-    localStorage.setItem('preferred_model', val);
-  };
+  const isUser = (role: string) => role === 'user' || role === 'human';
+  const isAI = (role: string) => role === 'ai' || role === 'assistant';
 
   return (
-    <div className="flex flex-col h-full bg-[#09090b]">
-      {/* Model selector header */}
-      <div className="px-6 py-2 border-b border-zinc-800/60 flex items-center justify-end gap-2">
-        <span className="text-xs text-zinc-600">模型:</span>
-        <select
-          value={model}
-          onChange={(e) => handleModelChange(e.target.value)}
-          className="text-xs bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1 text-zinc-400 focus:outline-none focus:border-zinc-700"
-        >
-          {MODELS.map((m) => (
-            <option key={m.value} value={m.value}>{m.label}</option>
-          ))}
-        </select>
+    <div className="flex flex-col h-full bg-white">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-2.5 border-b border-gray-100">
+        <span className="text-sm font-medium text-gray-700">对话</span>
+        <div className="flex items-center gap-1.5">
+          {onToggleLog && (
+            <button
+              onClick={onToggleLog}
+              className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+              title="执行日志"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </button>
+          )}
+          {onToggleNotif && (
+            <button
+              onClick={onToggleNotif}
+              className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+              title="通知"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+            </button>
+          )}
+          <span className="text-xs text-gray-400 ml-2">模型</span>
+          <select
+            value={model}
+            onChange={(e) => { setModel(e.target.value); localStorage.setItem('preferred_model', e.target.value); }}
+            className="text-xs bg-gray-50 border border-gray-200 rounded-md px-2 py-1 text-gray-600 focus:outline-none focus:border-gray-300 cursor-pointer"
+          >
+            {MODELS.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-2xl mx-auto space-y-6">
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-[720px] mx-auto px-5 py-6 space-y-6">
           {messages.length === 0 && !loading && (
-            <div className="flex flex-col items-center justify-center pt-20 text-zinc-600">
-              <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-4">
-                <svg className="w-8 h-8 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-5">
+                <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
                 </svg>
               </div>
-              <p className="text-sm text-zinc-400">你好！有什么可以帮你的吗？</p>
-              <div className="flex gap-2 mt-4">
-                <span className="text-xs text-zinc-600 px-2 py-1 rounded bg-zinc-800/50">退货咨询</span>
-                <span className="text-xs text-zinc-600 px-2 py-1 rounded bg-zinc-800/50">需求分析</span>
-                <span className="text-xs text-zinc-600 px-2 py-1 rounded bg-zinc-800/50">日常对话</span>
-              </div>
+              <h3 className="text-lg font-medium text-gray-800 mb-1">有什么可以帮你的？</h3>
+              <p className="text-sm text-gray-400">AI 助手可以帮你分析需求、回答问题和日常对话</p>
             </div>
           )}
 
           {messages.map((msg, i) => (
             <div key={i}>
               {msg.content && (
-                <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} mb-2`}>
-                  <div className="flex items-start gap-2 max-w-[85%]">
-                    {msg.role === 'ai' && (
-                      <div className="w-6 h-6 rounded-md bg-indigo-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-xs text-indigo-400">AI</span>
+                <div className={`flex ${isUser(msg.role) ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`flex items-start gap-3 max-w-[85%] ${isAI(msg.role) ? 'flex-row' : 'flex-row-reverse'}`}>
+                    {isAI(msg.role) && (
+                      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                        <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
                       </div>
                     )}
-                    <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
-                      msg.role === 'user'
-                        ? 'bg-indigo-600 text-white rounded-tr-md'
-                        : 'bg-zinc-800/80 text-zinc-200 rounded-tl-md border border-zinc-800'
+                    <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                      isUser(msg.role)
+                        ? 'bg-gray-100 text-gray-800 rounded-br-md'
+                        : 'text-gray-800'
                     }`}>
-                      {msg.content}
+                      <div className="whitespace-pre-wrap">{msg.content}</div>
                     </div>
-                    {msg.role === 'user' && (
-                      <div className="w-6 h-6 rounded-md bg-zinc-700 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-xs text-zinc-300">U</span>
+                    {isUser(msg.role) && (
+                      <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-xs font-medium text-gray-500">U</span>
                       </div>
                     )}
                   </div>
                 </div>
               )}
-              {msg.role === 'ai' && msg.components && msg.components.length > 0 && (
-                <div className="ml-8 space-y-3 max-w-[85%]">
+              {isAI(msg.role) && msg.components && msg.components.length > 0 && (
+                <div className="ml-10 space-y-3 max-w-[85%] mt-3">
                   {msg.components.map((comp, j) => (
                     <ComponentRenderer key={j} component={comp} onAction={(a) => handleAction(comp, a)} />
                   ))}
@@ -257,12 +299,14 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
 
           {streamingContent && (
             <div className="flex justify-start">
-              <div className="flex items-start gap-2 max-w-[85%]">
-                <div className="w-6 h-6 rounded-md bg-indigo-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                  <span className="text-xs text-indigo-400">AI</span>
+              <div className="flex items-start gap-3 max-w-[85%]">
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                  <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
                 </div>
-                <div className="rounded-2xl rounded-tl-md px-4 py-2.5 text-sm bg-zinc-800/80 text-zinc-200 border border-zinc-800 whitespace-pre-wrap">
-                  {streamingContent}<span className="inline-block w-1.5 h-4 bg-zinc-400 ml-0.5 animate-pulse align-middle" />
+                <div className="text-sm leading-relaxed text-gray-800 whitespace-pre-wrap py-1">
+                  {streamingContent}<span className="inline-block w-1.5 h-4 bg-gray-300 ml-0.5 animate-pulse align-middle rounded-sm" />
                 </div>
               </div>
             </div>
@@ -273,22 +317,25 @@ export default function UnifiedChat({ conversationId: convId }: Props) {
         </div>
       </div>
 
-      <div className="border-t border-zinc-800/60 px-6 py-4">
-        <div className="max-w-2xl mx-auto">
-          <div className="flex items-end gap-3 bg-zinc-900 border border-zinc-800 rounded-2xl px-4 py-3 focus-within:border-zinc-700 transition-colors">
+      {/* Input */}
+      <div className="px-5 pb-5 pt-2">
+        <div className="max-w-[720px] mx-auto">
+          <div className="flex items-end gap-3 bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm focus-within:border-gray-300 focus-within:shadow-md transition-all duration-200">
             <textarea
+              ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => { setInput(e.target.value); autoResize(); }}
               onKeyDown={handleKeyDown}
-              placeholder="输入消息... (Enter 发送)"
-              rows={1} disabled={loading}
-              className="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none resize-none"
-              onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px'; }}
+              placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
+              rows={1}
+              disabled={loading}
+              className="flex-1 bg-transparent text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none resize-none leading-relaxed"
+              style={{ maxHeight: '200px' }}
             />
             <button
               onClick={handleSend}
               disabled={loading || !input.trim()}
-              className="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-500 text-white hover:bg-indigo-400 transition-colors disabled:opacity-30"
+              className="shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-colors disabled:opacity-20 disabled:cursor-not-allowed"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />

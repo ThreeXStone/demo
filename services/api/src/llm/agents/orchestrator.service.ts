@@ -23,19 +23,32 @@ export interface OrchestrateResult {
   error?: string;
 }
 
+export interface ProgressEvent {
+  step: string;
+  status: 'started' | 'completed';
+  message: string;
+}
+
 @Injectable()
 export class OrchestratorService {
   private readonly logger = new Logger(OrchestratorService.name);
 
-  async orchestrate(input: string): Promise<OrchestrateResult> {
+  async orchestrate(
+    input: string,
+    onProgress?: (event: ProgressEvent) => void,
+  ): Promise<OrchestrateResult> {
+    const emit = (step: string, status: 'started' | 'completed', message: string) => {
+      this.logger.log(`[${step}] ${status}: ${message}`);
+      onProgress?.({ step, status, message });
+    };
+
     try {
       // 第一步：抽取
-      this.logger.log('[extractAgent] 开始执行...');
+      emit('extractAgent', 'started', '正在提取需求信息...');
       const extractResult = await extractAgent.invoke({ input });
-      // DeepSeek 输出可能被 ```json 代码块包裹，先提取
       const json = extractResult.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
       const parsed = JSON.parse(json || extractResult);
-      this.logger.log(`[extractAgent] 完成，结果: orderId=${parsed.orderId}, requestType=${parsed.requestType}, isUnopened=${parsed.isUnopened}`);
+      emit('extractAgent', 'completed', `需求提取完成: orderId=${parsed.orderId}, requestType=${parsed.requestType}`);
 
       // 检查关键字段
       let clarificationQuestions: string[] = [];
@@ -44,12 +57,11 @@ export class OrchestratorService {
       if (!parsed.receivedDate) clarificationQuestions.push('请提供收货日期');
       if (parsed.isUnopened === null) clarificationQuestions.push('请确认商品是否未拆封');
 
-      // 缺少关键字段时终止流程
       if (clarificationQuestions.length > 0) {
         this.logger.warn(`[orchestrate] 缺少关键字段，需要澄清: ${clarificationQuestions.join(', ')}`);
         return {
           mode: 'fixed_workflow',
-	  status: 'need_clarification',
+          status: 'need_clarification',
           clarificationQuestions,
           usedAgents: ['RequirementExtractAgent'],
           fallback: 'ask_user',
@@ -57,29 +69,29 @@ export class OrchestratorService {
       }
 
       // 第二步：并行执行（政策校验 + 风险审查）
-      this.logger.log('[policyCheckAgent, riskReviewAgent] 并行执行中...');
+      emit('policyCheckAgent', 'started', '正在进行政策校验...');
+      emit('riskReviewAgent', 'started', '正在进行风险审查...');
       const [policyResult, riskResult] = await Promise.all([
         policyCheckAgent.invoke({ extractResult }),
         riskReviewAgent.invoke({ extractResult }),
       ]);
-      this.logger.log('[policyCheckAgent] 完成');
-      this.logger.log('[riskReviewAgent] 完成');
+      emit('policyCheckAgent', 'completed', '政策校验完成');
+      emit('riskReviewAgent', 'completed', '风险审查完成');
 
       // 第三步：QA 验收条件
-      this.logger.log('[qaAgent] 开始执行...');
+      emit('qaAgent', 'started', '正在生成验收条件...');
       const qaResult = await qaAgent.invoke({ input, extractResult });
-      this.logger.log('[qaAgent] 完成');
+      emit('qaAgent', 'completed', '验收条件生成完成');
 
       // 第四步：汇总
-      this.logger.log('[summaryAgent] 开始执行...');
+      emit('summaryAgent', 'started', '正在生成汇总报告...');
       const report = await summaryAgent.invoke({
         extractResult,
         policyResult,
         riskResult,
         qaResult,
       });
-      this.logger.log('[summaryAgent] 完成');
-      this.logger.log('[orchestrate] 全流程执行完毕');
+      emit('summaryAgent', 'completed', '汇总报告生成完成');
 
       return {
         mode: 'fixed_workflow',

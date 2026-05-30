@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { hasToken, clearToken } from "@/lib/api";
 import LoginForm from "@/components/LoginForm";
 import ConversationList from "@/components/ConversationList";
@@ -11,10 +11,16 @@ import NotificationPanel from "@/components/NotificationPanel";
 type Tab = "chat" | "docs";
 
 export default function Home() {
-  const [authorized, setAuthorized] = useState(hasToken());
+  const [authorized, setAuthorized] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState(0);
   const [tab, setTab] = useState<Tab>("chat");
+
+  useEffect(() => {
+    setAuthorized(hasToken());
+    setAuthChecked(true);
+  }, []);
 
   const handleSelect = useCallback((id: string) => {
     if (id) {
@@ -35,6 +41,10 @@ export default function Home() {
     setAuthorized(false);
     setActiveId(null);
   };
+
+  if (!authChecked) {
+    return null;
+  }
 
   if (!authorized) {
     return <LoginForm onSuccess={() => setAuthorized(true)} />;

@@ -1,6 +1,6 @@
 const TOKEN_KEY = "jwt_token";
 
-function getToken(): string | null {
+export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem(TOKEN_KEY);
 }

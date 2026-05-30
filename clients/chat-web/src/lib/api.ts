@@ -59,6 +59,12 @@ export async function sendMessage(conversationId: string, input: string): Promis
 }> {
   return request(`/api/conversations/${conversationId}/chat`, { method: "POST", body: JSON.stringify({ input }) });
 }
+export async function saveMessage(conversationId: string, role: string, content: string): Promise<Message> {
+  return request(`/api/conversations/${conversationId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ role, content }),
+  });
+}
 export async function deleteConversation(conversationId: string): Promise<void> {
   return request(`/api/conversations/${conversationId}`, { method: "DELETE" });
 }

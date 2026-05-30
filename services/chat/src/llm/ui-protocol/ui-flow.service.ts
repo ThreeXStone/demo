@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { AIUIResponse } from './ui-schemas';
 import { validateUIResponse } from './ui-schemas';
+import { RequirementService } from './requirement.service';
 
 const V = '1.0.0';
 
@@ -13,6 +14,8 @@ interface SessionContext { stage: string; collectedData: Record<string, unknown>
 @Injectable()
 export class UIFlowService {
   private sessions = new Map<string, SessionContext>();
+
+  constructor(private readonly reqService: RequirementService) {}
 
   private getContext(sessionId: string): SessionContext {
     if (!this.sessions.has(sessionId))
@@ -35,15 +38,15 @@ export class UIFlowService {
     }]);
   }
 
-  handleAction(sessionId: string, action: { componentType?: string; payload?: Record<string, unknown> }): AIUIResponse {
+  async handleAction(sessionId: string, action: { componentType?: string; payload?: Record<string, unknown> }): Promise<AIUIResponse> {
     const ctx = this.getContext(sessionId);
     const payload = action.payload || {};
     if ((payload.type as string) === 'cancel') return this.goBack(ctx);
     switch (ctx.stage) {
       case 'select_type': return this.onTypeSelected(ctx, payload);
       case 'fill_detail': return this.onFormSubmitted(ctx, payload);
-      case 'confirm': return this.onConfirmation(ctx, payload);
-      default: return this.onButtonAction(ctx, payload);
+      case 'confirm': return this.onConfirmation(sessionId, ctx, payload);
+      default: return this.onButtonAction(sessionId, ctx, payload);
     }
   }
 
@@ -100,15 +103,35 @@ export class UIFlowService {
     ]);
   }
 
-  private onConfirmation(ctx: SessionContext, payload: Record<string, unknown>): AIUIResponse {
+  private async onConfirmation(sessionId: string, ctx: SessionContext, payload: Record<string, unknown>): Promise<AIUIResponse> {
     if (payload.type !== 'confirm' || payload.confirmed === false) return this.goBack(ctx);
     ctx.stage = 'result';
+
+    const d = ctx.collectedData;
+    const reqId = `REQ-${Date.now().toString(36).toUpperCase()}`;
+    ctx.collectedData.reqId = reqId;
+
+    // 持久化到数据库
+    try {
+      await this.reqService.create({
+        sessionId,
+        reqId,
+        title: (d.title as string) || '',
+        type: (d.reqType as string) || 'functional',
+        priority: (d.priority as string) || 'P2',
+        description: (d.description as string) || '',
+        acceptanceCriteria: (d.acceptanceCriteria as string) || undefined,
+        notes: (d.notes as string) || undefined,
+      });
+    } catch (e) {
+      console.error('[UIFlow] 保存需求失败:', (e as Error).message);
+    }
+
     return this.buildResult(ctx);
   }
 
   private buildResult(ctx: SessionContext): AIUIResponse {
-    const reqId = `REQ-${Date.now().toString(36).toUpperCase()}`;
-    ctx.collectedData.reqId = reqId;
+    const reqId = (ctx.collectedData.reqId as string) || '';
     return ok(`需求 ${reqId} 已提交，分析流程已启动。`, [
       { type: 'steps', steps: [
         { label: '需求提交', status: 'completed' }, { label: '需求评审', status: 'current' },
@@ -135,15 +158,40 @@ export class UIFlowService {
     }
   }
 
-  private onButtonAction(ctx: SessionContext, payload: Record<string, unknown>): AIUIResponse {
+  private async onButtonAction(sessionId: string, ctx: SessionContext, payload: Record<string, unknown>): Promise<AIUIResponse> {
     const val = (payload.selectedId || payload.value || payload.buttonValue) as string;
     if (val === 'new_req') { ctx.collectedData = {}; ctx.stage = 'select_type'; return this.buildSelectType(ctx); }
+    if (val === 'view_reqs') {
+      const reqs = await this.reqService.findBySession(sessionId);
+      if (reqs.length === 0) return ok('暂无已提交的需求记录。', [
+        { type: 'action_buttons', title: '操作', buttons: [{ label: '提交新需求', value: 'new_req', style: 'primary' }] },
+      ]);
+      const list = reqs.map((r) => `- **${r.reqId}** ${r.title} [${r.priority}] ${r.status}`).join('\n');
+      return ok(`共 ${reqs.length} 条需求：\n\n${list}`, [
+        { type: 'action_buttons', title: '操作', buttons: [
+          { label: '提交新需求', value: 'new_req', style: 'primary' },
+          { label: '查看需求列表', value: 'view_reqs', style: 'secondary' },
+        ]},
+      ]);
+    }
     if (val === 'gen_stories') return ok('已生成用户故事：\n\n1. 作为用户，我希望能...\n2. 作为管理员，我希望能...\n3. 作为系统，我希望能...', [
       { type: 'action_buttons', title: '操作', buttons: [{ label: '查看分析报告', value: 'view_report', style: 'primary' }, { label: '提交新需求', value: 'new_req', style: 'secondary' }] },
     ]);
-    if (val === 'view_report') return ok(`需求 ${ctx.collectedData.reqId || ''} 分析报告：\n\n## 可行性评估\n该需求技术可行，建议纳入下个迭代。\n\n## 风险评估\n低风险，已有类似功能可复用。\n\n## 预估工时\n5 人天`, [
-      { type: 'action_buttons', title: '操作', buttons: [{ label: '生成用户故事', value: 'gen_stories', style: 'primary' }, { label: '提交新需求', value: 'new_req', style: 'secondary' }] },
-    ]);
+    if (val === 'view_report') {
+      const reqId = (ctx.collectedData.reqId as string) || '';
+      let report = `需求 ${reqId} 分析报告：\n\n## 可行性评估\n该需求技术可行，建议纳入下个迭代。\n\n## 风险评估\n低风险，已有类似功能可复用。\n\n## 预估工时\n5 人天`;
+      // 尝试从数据库查最新需求
+      if (!reqId) {
+        const reqs = await this.reqService.findBySession(sessionId);
+        if (reqs.length > 0) {
+          const latest = reqs[0];
+          report = `需求 ${latest.reqId} 分析报告：\n\n## 可行性评估\n该需求技术可行，建议纳入下个迭代。\n\n## 风险评估\n低风险，已有类似功能可复用。\n\n## 预估工时\n5 人天`;
+        }
+      }
+      return ok(report, [
+        { type: 'action_buttons', title: '操作', buttons: [{ label: '生成用户故事', value: 'gen_stories', style: 'primary' }, { label: '提交新需求', value: 'new_req', style: 'secondary' }] },
+      ]);
+    }
     return ok('请选择操作。', [
       { type: 'action_buttons', title: '常用功能', buttons: [{ label: '提交新需求', value: 'new_req', style: 'primary' }, { label: '查看需求列表', value: 'view_reqs', style: 'secondary' }] },
     ]);

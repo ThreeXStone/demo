@@ -7,17 +7,17 @@ interface Props {
 }
 
 const btnStyle: Record<string, string> = {
-  primary: 'bg-indigo-500 text-white hover:bg-indigo-400',
-  secondary: 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800',
-  danger: 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20',
+  primary: 'bg-gray-900 text-white hover:bg-gray-800',
+  secondary: 'border border-gray-300 text-gray-700 hover:bg-gray-50',
+  danger: 'bg-red-50 border border-red-200 text-red-600 hover:bg-red-100',
 };
 
 export default function ActionButtons({ title, buttons, onAction }: Props) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
       {title && (
-        <div className="px-4 py-3 border-b border-zinc-800">
-          <h4 className="text-sm font-medium text-zinc-200">{title}</h4>
+        <div className="px-4 py-3 border-b border-gray-100">
+          <h4 className="text-sm font-semibold text-gray-800">{title}</h4>
         </div>
       )}
       <div className="p-3 flex flex-wrap gap-2">

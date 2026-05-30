@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider   = "postgresql"
-  extensions = [pgvector]
+  extensions = [vector]
 }
 
 model User {
@@ -72,4 +72,22 @@ model DocumentChunk {
   createdAt  DateTime @default(now())
 
   @@index([documentId])
+}
+
+model Requirement {
+  id                 String   @id @default(cuid())
+  sessionId          String
+  reqId              String   // REQ-xxx 编号
+  title              String
+  type               String   // functional | performance | security | ui_ux
+  priority           String   // P0 | P1 | P2 | P3
+  description        String   @db.Text
+  acceptanceCriteria String?  @db.Text
+  notes              String?
+  status             String   @default("submitted") // submitted | reviewing | in_progress | completed
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([sessionId])
+  @@index([reqId])
 }

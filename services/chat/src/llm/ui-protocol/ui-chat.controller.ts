@@ -1,6 +1,7 @@
 import { Controller, Post, Body, HttpCode, HttpStatus, Req, Res } from '@nestjs/common';
 import { UIFlowService } from './ui-flow.service';
 import { runAnalysisGraph } from '../graph/requirement-analysis-graph';
+import type { NodeProgressEvent } from '../graph/requirement-analysis-graph';
 import { ChatOpenAI } from '@langchain/openai';
 import { ConfigService } from '@nestjs/config';
 
@@ -16,7 +17,7 @@ function getModel(config: ConfigService, modelName?: string) {
     model,
     temperature: 0.3,
     maxTokens: 2048,
-    timeout: 25_000,
+    timeout: 100_000,
     apiKey: isGpt
       ? config.get('GPT_API_KEY') || config.get('OPENAI_API_KEY')
       : config.get('OPENAI_API_KEY'),
@@ -24,7 +25,7 @@ function getModel(config: ConfigService, modelName?: string) {
       baseURL: isGpt
         ? config.get('GPT_BASE_URL') || config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1'
         : config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
-      timeout: 25_000,
+      timeout: 100_000,
     },
   });
 }
@@ -118,65 +119,60 @@ export class UIChatController {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
-    const graphSteps = [
-      { agent: 'classifier', name: '意图识别' },
-      { agent: 'extract', name: '需求抽取' },
-      { agent: 'clarify', name: '需求澄清' },
-      { agent: 'analysis', name: '深度分析' },
-      { agent: 'risk', name: '风险评估' },
-      { agent: 'summary', name: '汇总报告' },
-    ];
-
     const emit = (type: string, payload: Record<string, unknown>) => {
       res.write(formatSSE({ messageType: type, timestamp: new Date().toISOString(), payload }));
     };
 
     try {
       const model = getModel(this.config, body.model);
+      console.log(`[UIChat] analyze request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
 
-      emit('progress', { agent: 'start', agentDisplayName: '启动分析引擎', step: 0, totalSteps: graphSteps.length, status: 'started' });
+      const totalSteps = 6; // classifier + extract + clarify + analysis + risk + summary
+      const nodeOrder = ['classifier', 'extractStep', 'clarifyStep', 'analysisStep', 'riskStep', 'summaryStep'];
+      let stepIndex = 0;
+      const nodeDurations: Record<string, number> = {};
 
-      let currentStep = 0;
-      const nodeStart = (agent: string, name: string) => {
-        emit('node_start', { agent, agentDisplayName: name, timestamp: Date.now() });
+      // Real node progress from graph
+      const onNodeEvent = (e: NodeProgressEvent) => {
+        if (e.type === 'node_start') {
+          console.log(`[UIChat] → SSE node_start: ${e.node} (${e.displayName})`);
+          emit('node_start', {
+            agent: e.node,
+            agentDisplayName: e.displayName,
+            timestamp: Date.now(),
+          });
+        } else if (e.type === 'node_end') {
+          nodeDurations[e.node] = e.duration || 0;
+          stepIndex = nodeOrder.indexOf(e.node) + 1 || stepIndex + 1;
+          console.log(`[UIChat] → SSE node_end:   ${e.node} (${e.displayName}) | ${((e.duration || 0) / 1000).toFixed(1)}s${e.error ? ' | ERROR: ' + e.error : ''}`);
+          emit('progress', {
+            agent: e.node,
+            agentDisplayName: e.displayName,
+            step: stepIndex,
+            totalSteps,
+            status: 'completed',
+          });
+          emit('node_end', {
+            agent: e.node,
+            agentDisplayName: e.displayName,
+            duration: `${((e.duration || 0) / 1000).toFixed(1)}s`,
+            error: e.error,
+            timestamp: Date.now(),
+          });
+        }
       };
-      const nodeEnd = (agent: string, name: string, duration: number) => {
-        currentStep++;
-        emit('progress', { agent, agentDisplayName: name, step: currentStep, totalSteps: graphSteps.length, status: 'completed' });
-        emit('node_end', { agent, agentDisplayName: name, duration: `${(duration / 1000).toFixed(1)}s`, timestamp: Date.now() });
-      };
 
-      // Instrumented graph run
-      const timings: Record<string, number> = {};
-      const t0 = Date.now();
-
-      // classifier
-      nodeStart('classifier', '意图识别');
       const result = await runAnalysisGraph({
         input: body.input,
         retrievedContext: body.retrievedContext || '',
         model,
+        onNodeEvent,
       });
-      timings.classifier = Date.now() - t0;
-      nodeEnd('classifier', '意图识别', timings.classifier);
 
-      // Report based on intent
+      console.log(`[UIChat] graph result | intent=${result.intent} | summaryLen=${(result.summary || '').length}`);
+
+      // Send markdown response
       if (result.intent === 'analyze') {
-        // Simulate remaining node timings (graph ran as a whole)
-        const t1 = Date.now();
-        const nodeNames = [
-          ['extract', '需求抽取'], ['clarify', '需求澄清'],
-          ['analysis', '深度分析'], ['risk', '风险评估'], ['summary', '汇总报告'],
-        ];
-        const perNode = Math.max(500, (t1 - t0) / nodeNames.length);
-        for (const [agent, name] of nodeNames) {
-          nodeStart(agent, name);
-          const td = perNode + Math.random() * perNode * 0.5;
-          timings[agent] = td;
-          nodeEnd(agent, name, td);
-        }
-
-        // markdown
         for (const line of (result.summary || '').split('\n')) {
           res.write(formatSSE({
             messageType: 'markdown',
@@ -185,25 +181,20 @@ export class UIChatController {
           }));
           await new Promise((r) => setTimeout(r, 10));
         }
-      } else if (result.intent === 'query') {
-        emit('progress', { agent: 'classifier', agentDisplayName: '意图识别', step: 1, totalSteps: graphSteps.length, status: 'completed' });
-        res.write(formatSSE({
-          messageType: 'markdown',
-          timestamp: new Date().toISOString(),
-          payload: { content: result.queryResponse || result.summary, isChunk: false },
-        }));
       } else {
-        emit('progress', { agent: 'classifier', agentDisplayName: '意图识别', step: 1, totalSteps: graphSteps.length, status: 'completed' });
+        const text = result.queryResponse || result.chatResponse || result.summary;
         res.write(formatSSE({
           messageType: 'markdown',
           timestamp: new Date().toISOString(),
-          payload: { content: result.chatResponse || result.summary, isChunk: false },
+          payload: { content: text, isChunk: false },
         }));
       }
 
-      // ui: steps component showing progress
-      const stepUI = graphSteps.slice(0, result.intent === 'analyze' ? 6 : 1).map((s) => ({
-        label: s.name,
+      // Resolved nodes for steps UI
+      const allNodeNames = ['意图识别', '需求抽取', '需求澄清', '深度分析', '风险评估', '汇总报告'];
+      const actualSteps = result.intent === 'analyze' ? 6 : 1;
+      const stepUI = allNodeNames.slice(0, actualSteps).map((label) => ({
+        label,
         status: 'completed' as const,
       }));
       res.write(formatSSE({

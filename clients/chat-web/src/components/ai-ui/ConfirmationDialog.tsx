@@ -9,33 +9,31 @@ interface Props {
   onAction: (action: Record<string, unknown>) => void;
 }
 
-const severityBg: Record<string, string> = {
-  danger: 'border-red-800 bg-red-950/30',
-  warning: 'border-yellow-800 bg-yellow-950/20',
-  info: 'border-blue-800 bg-blue-950/20',
-};
-
 export default function ConfirmationDialog({
   title, summary, confirmLabel, cancelLabel, severity, onAction,
 }: Props) {
+  const isDanger = severity === 'danger';
+
   return (
-    <div className={`rounded-xl border ${severityBg[severity || 'info'] || severityBg.info} overflow-hidden`}>
-      <div className="px-4 py-3 border-b border-zinc-800">
-        <h4 className="text-sm font-medium text-zinc-200">{title}</h4>
+    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+      <div className="px-4 py-3 border-b border-gray-100">
+        <h4 className="text-sm font-semibold text-gray-800">{title}</h4>
       </div>
       <div className="px-4 py-3">
-        <p className="text-sm text-zinc-400 whitespace-pre-wrap">{summary}</p>
+        <p className="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">{summary}</p>
       </div>
-      <div className="px-4 py-3 flex gap-2 border-t border-zinc-800">
+      <div className="px-4 py-3 flex gap-2 border-t border-gray-100">
         <button
           onClick={() => onAction({ type: 'cancel' })}
-          className="flex-1 py-2 border border-zinc-700 text-zinc-300 rounded-lg hover:bg-zinc-800 transition-colors text-sm"
+          className="flex-1 py-2 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium"
         >
           {cancelLabel || '取消'}
         </button>
         <button
           onClick={() => onAction({ type: 'confirm', confirmed: true })}
-          className="flex-1 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-400 transition-colors text-sm font-medium"
+          className={`flex-1 py-2 text-white rounded-lg transition-colors text-sm font-medium ${
+            isDanger ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-900 hover:bg-gray-800'
+          }`}
         >
           {confirmLabel || '确认'}
         </button>

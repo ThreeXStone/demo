@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MessageService } from '../conversation/message.service';
 import { SearchService } from '../embedding/search.service';
-import { OrchestratorService, OrchestrateResult } from './agents/orchestrator.service';
+import { OrchestratorService, OrchestrateResult, ProgressEvent } from './agents/orchestrator.service';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 
 export interface AnalysisResult {
@@ -31,17 +31,25 @@ export class AdvancedAnalysisService {
     userId: string,
     conversationId: string,
     input: string,
+    onProgress?: (event: ProgressEvent) => void,
   ): Promise<AnalysisResult> {
+    const emit = (step: string, status: 'started' | 'completed', message: string) => {
+      this.logger.log(`[${step}] ${status}: ${message}`);
+      onProgress?.({ step, status, message });
+    };
+
     this.logger.log(`[analyze] conversationId=${conversationId}`);
 
     // 1. 读取会话历史
+    emit('loadHistory', 'started', '正在加载对话历史...');
     const historyRows = await this.messageService.getHistory(conversationId);
     const historyMessages = await this.messageService.getHistoryAsLangChainMessages(conversationId);
-    this.logger.log(`[analyze] 历史消息: ${historyRows.length} 条`);
+    emit('loadHistory', 'completed', `已加载 ${historyRows.length} 条历史消息`);
 
     // 2. 语义检索用户文档
+    emit('searchDocs', 'started', '正在检索相关文档...');
     const retrievedDocs = await this.searchService.similaritySearch(input, userId, 3);
-    this.logger.log(`[analyze] 检索到 ${retrievedDocs.length} 条相关文档`);
+    emit('searchDocs', 'completed', `检索到 ${retrievedDocs.length} 条相关文档`);
 
     // 3. 组装完整上下文
     const contextParts: string[] = [];
@@ -64,7 +72,7 @@ export class AdvancedAnalysisService {
     const enrichedInput = contextParts.join('\n\n');
 
     // 4. 调用 Multi-Agent 分析
-    const result = await this.orchestrator.orchestrate(enrichedInput);
+    const result = await this.orchestrator.orchestrate(enrichedInput, onProgress);
 
     // 5. 写入消息历史
     await this.messageService.addMessage(conversationId, 'human', input);
