@@ -63,7 +63,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
     const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, input: text, model }),
+      body: JSON.stringify({ sessionId, input: text, model, conversationId: convId }),
       signal: ctrl.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

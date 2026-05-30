@@ -2,7 +2,7 @@ import { Annotation, MessagesAnnotation, StateGraph, START, END } from '@langcha
 import { ToolNode } from '@langchain/langgraph/prebuilt';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { tool } from '@langchain/core/tools';
-import { BaseMessage } from '@langchain/core/messages';
+import { BaseMessage, SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 import {
   createExtractAgent,
@@ -17,9 +17,13 @@ export const RequirementAnalysisState = Annotation.Root({
   ...MessagesAnnotation.spec,
   input: Annotation<string>,
   retrievedContext: Annotation<string>,
+  history: Annotation<{ role: 'user' | 'assistant'; content: string }[]>({
+    default: () => [],
+    reducer: (_, next) => next,
+  }),
   // classifier
   intent: Annotation<'analyze' | 'query' | 'chat'>({
-    default: () => 'analyze',
+    default: () => 'chat',
     reducer: (_, next) => next,
   }),
   // analysis pipeline
@@ -194,6 +198,7 @@ const ANALYSIS_SYSTEM_PROMPT = `你是资深需求分析专家。根据用户输
 - 对相同参数禁止重复调用工具`;
 
 function createAnalysisSubGraph(model: BaseChatModel) {
+  if (!model.bindTools) throw new Error('当前模型不支持工具调用');
   const modelWithTools = model.bindTools(analysisTools);
 
   const subgraphState = Annotation.Root({
@@ -223,10 +228,15 @@ function createAnalysisSubGraph(model: BaseChatModel) {
     const loop = state.toolLoopCount + 1;
     console.log(`[LangGraph] ${logTS()} | ReAct AGENT_START  | round ${loop}/${MAX_TOOL_LOOPS} | msgs=${state.messages.length}`);
     const t0 = Date.now();
-    const response = await modelWithTools.invoke([
-      { role: 'system', content: ANALYSIS_SYSTEM_PROMPT },
-      { role: 'user', content: `用户输入：\n需求抽取结果：${JSON.stringify(state.extracted)}` },
-    ]);
+
+    const messages = state.messages.length === 0
+      ? [
+          new SystemMessage(ANALYSIS_SYSTEM_PROMPT),
+          new HumanMessage(`用户输入：\n需求抽取结果：${JSON.stringify(state.extracted)}`),
+        ]
+      : state.messages;
+
+    const response = await modelWithTools.invoke(messages);
     const elapsed = Date.now() - t0;
     const tcCount = (response as any).tool_calls?.length || 0;
     console.log(`[LangGraph] ${logTS()} | ReAct AGENT_DONE   | round ${loop} | ${elapsed}ms | tool_calls=${tcCount} | contentLen=${typeof response.content === 'string' ? response.content.length : 0}`);
@@ -309,6 +319,7 @@ const createNodes = (model: BaseChatModel) => {
       console.log(`[LangGraph] queryHandler: invoking LLM...`);
       const result = await withTimeout(model.invoke([
         { role: 'system', content: '你是需求查询助手。简洁回答查询。' },
+        ...state.history,
         { role: 'user', content: state.input },
       ]), 'queryHandler');
       const content = typeof result.content === 'string' ? result.content : '';
@@ -327,6 +338,7 @@ const createNodes = (model: BaseChatModel) => {
       console.log(`[LangGraph] chatHandler: invoking LLM...`);
       const result = await withTimeout(model.invoke([
         { role: 'system', content: '你是友好的AI助手。用自然、亲切的语气回复。' },
+        ...state.history,
         { role: 'user', content: state.input },
       ]), 'chatHandler');
       const content = typeof result.content === 'string' ? result.content : '';
@@ -495,6 +507,7 @@ export async function runAnalysisGraph(args: {
   input: string;
   retrievedContext: string;
   model: BaseChatModel;
+  history?: { role: 'user' | 'assistant'; content: string }[];
 }): Promise<RunAnalysisGraphOutput> {
   console.log(`[LangGraph] ========== GRAPH START ==========`);
   console.log(`[LangGraph] input: "${args.input.slice(0, 100)}"`);
@@ -505,6 +518,7 @@ export async function runAnalysisGraph(args: {
   const result = await graph.invoke({
     input: args.input,
     retrievedContext: args.retrievedContext,
+    history: args.history || [],
     messages: [],
   });
   const totalElapsed = Date.now() - t0;

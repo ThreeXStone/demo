@@ -3,6 +3,7 @@ import { UIFlowService } from './ui-flow.service';
 import { runAnalysisGraph } from '../graph/requirement-analysis-graph';
 import { ChatOpenAI } from '@langchain/openai';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../../prisma/prisma.service';
 
 function formatSSE(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -34,6 +35,7 @@ export class UIChatController {
   constructor(
     private readonly uiFlow: UIFlowService,
     private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
 
   @Post('chat')
@@ -87,7 +89,7 @@ export class UIChatController {
 
   @Post('analyze')
   async analyze(
-    @Body() body: { sessionId: string; input: string; retrievedContext?: string; model?: string },
+    @Body() body: { sessionId: string; input: string; retrievedContext?: string; model?: string; conversationId?: string },
     @Req() req: any,
     @Res() res: any,
   ) {
@@ -101,10 +103,25 @@ export class UIChatController {
       const model = getModel(this.config, body.model);
       console.log(`[UIChat] analyze request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
 
+      // Retrieve conversation history
+      let history: { role: 'user' | 'assistant'; content: string }[] = [];
+      if (body.conversationId) {
+        const messages = await this.prisma.message.findMany({
+          where: { conversationId: body.conversationId },
+          orderBy: { createdAt: 'asc' },
+          take: 20,
+        });
+        history = messages.map((m) => ({
+          role: (m.role === 'human' ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: m.content,
+        }));
+      }
+
       const result = await runAnalysisGraph({
         input: body.input,
         retrievedContext: body.retrievedContext || '',
         model,
+        history,
       });
 
       console.log(`[UIChat] graph result | intent=${result.intent} | summaryLen=${(result.summary || '').length}`);
