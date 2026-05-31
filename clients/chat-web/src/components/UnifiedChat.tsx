@@ -60,7 +60,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
   };
 
   const handleSSE = async (endpoint: string, text: string, ctrl: AbortController): Promise<ChatMsg> => {
-    const resp = await fetch(endpoint, {
+    const resp = await fetch(`http://localhost:3002${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId, input: text, model, conversationId: convId }),
@@ -133,7 +133,11 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
     }
 
     try {
-      const endpoint = route === 'analyze' ? '/api/ui-chat/analyze' : '/api/ui-chat/chat/stream';
+      const endpoint = route === 'analyze'
+        ? '/api/ui-chat/requirement/collect'
+        : route === 'query'
+          ? '/api/ui-chat/query'
+          : '/api/ui-chat/chat';
       const aiMsg = await handleSSE(endpoint, text, ctrl);
 
       if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
@@ -274,7 +278,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
             </div>
           ))}
 
-          {streamingContent && (
+          {loading && streamingContent && (
             <div className="flex justify-start">
               <div className="flex items-start gap-3 max-w-[85%]">
                 <div className="w-7 h-7 rounded-full bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center shrink-0 mt-0.5 shadow-sm">

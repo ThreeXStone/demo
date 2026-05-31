@@ -96,7 +96,7 @@ export async function getNotifications(since?: string): Promise<NotificationEven
 // --- UI Chat (chat service 3002) ---
 
 export async function uiAction(sessionId: string, action: UIAction): Promise<AIUIResponse> {
-  const res = await fetch("/api/ui-chat/action", {
+  const res = await fetch("/api/ui-chat/requirement/action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId, action }),
