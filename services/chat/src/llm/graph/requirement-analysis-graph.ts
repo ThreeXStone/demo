@@ -284,7 +284,7 @@ function createAnalysisSubGraph(model: BaseChatModel) {
 // --- Node Factory ---
 
 
-const createNodes = (model: BaseChatModel) => {
+const createNodes = (model: BaseChatModel, onProgress?: (step: string, message: string) => void) => {
 
   // Timeout wrapper: reject if LLM call exceeds limit
   const LLM_TIMEOUT = 100_000;
@@ -307,7 +307,9 @@ const createNodes = (model: BaseChatModel) => {
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     // DeepSeek 模型 invoke 可能无限挂起，直接使用关键词分类
-    return { intent: classifyAndLog(state.input) };
+    const intent = classifyAndLog(state.input);
+    onProgress?.('classifier', '意图识别完成');
+    return { intent };
   },
 
   // ====== Fast-Path Handlers (with timeout) ======
@@ -324,6 +326,7 @@ const createNodes = (model: BaseChatModel) => {
       ]), 'queryHandler');
       const content = typeof result.content === 'string' ? result.content : '';
       console.log(`[LangGraph] queryHandler: LLM responded (${content.length} chars)`);
+      onProgress?.('queryHandler', '查询完成');
       return { queryResponse: content, summary: content, messages: [result] };
     } catch (e) {
       console.log(`[LangGraph] queryHandler: failed - ${(e as Error).message}`);
@@ -343,6 +346,7 @@ const createNodes = (model: BaseChatModel) => {
       ]), 'chatHandler');
       const content = typeof result.content === 'string' ? result.content : '';
       console.log(`[LangGraph] chatHandler: LLM responded (${content.length} chars)`);
+      onProgress?.('chatHandler', '对话完成');
       return { chatResponse: content, summary: content, messages: [result] };
     } catch (e) {
       console.log(`[LangGraph] chatHandler: failed - ${(e as Error).message}`);
@@ -361,6 +365,7 @@ const createNodes = (model: BaseChatModel) => {
       const result = await withTimeout(agent.invoke({ input: state.input }), 'extractStep');
       const content = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
       console.log(`[LangGraph] extractStep: LLM responded (${content.length} chars)`);
+      onProgress?.('extractStep', '需求信息抽取完成');
       return { extracted: parseJson(content, { title: state.input.slice(0, 50), type: 'functional', priority: 'P2', description: state.input, isComplete: false, missingFields: ['详细描述'] }), messages: [result] };
     } catch (e) {
       console.log(`[LangGraph] extractStep: failed - ${(e as Error).message}`);
@@ -377,6 +382,7 @@ const createNodes = (model: BaseChatModel) => {
       const result = await withTimeout(agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }), 'clarifyStep');
       const content = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
       console.log(`[LangGraph] clarifyStep: LLM responded (${content.length} chars)`);
+      onProgress?.('clarifyStep', '需求澄清分析完成');
       return { clarified: parseJson(content, { needsClarification: false, questions: [] }), messages: [result] };
     } catch (e) {
       console.log(`[LangGraph] clarifyStep: failed - ${(e as Error).message}`);
@@ -398,6 +404,7 @@ const createNodes = (model: BaseChatModel) => {
       }), 'analysisStep');
       const content = result.analysisResult || '';
       console.log(`[LangGraph] analysisStep: subgraph done (${content.length} chars, ${result.toolLoopCount} tool loops)`);
+      onProgress?.('analysisStep', '需求深度分析完成');
       return { analysisResult: content, toolLoopCount: result.toolLoopCount };
     } catch (e) {
       console.log(`[LangGraph] analysisStep: failed - ${(e as Error).message}`);
@@ -414,6 +421,7 @@ const createNodes = (model: BaseChatModel) => {
       const result = await withTimeout(agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }), 'riskStep');
       const content = typeof result.content === 'string' ? result.content : '';
       console.log(`[LangGraph] riskStep: LLM responded (${content.length} chars)`);
+      onProgress?.('riskStep', '风险评估完成');
       return { riskResult: content || '风险评估暂不可用' };
     } catch (e) {
       console.log(`[LangGraph] riskStep: failed - ${(e as Error).message}`);
@@ -434,6 +442,7 @@ const createNodes = (model: BaseChatModel) => {
       }), 'summaryStep');
       const content = typeof result.content === 'string' ? result.content : '';
       console.log(`[LangGraph] summaryStep: LLM responded (${content.length} chars)`);
+      onProgress?.('summaryStep', '汇总报告生成中...');
       return { summary: content || '汇总暂不可用', messages: [result] };
     } catch (e) {
       console.log(`[LangGraph] summaryStep: failed - ${(e as Error).message}`);
@@ -455,8 +464,8 @@ function routeByIntent(state: typeof RequirementAnalysisState.State): string {
 
 // --- Graph Factory ---
 
-export function createAnalysisGraph(model: BaseChatModel) {
-  const nodes = createNodes(model);
+export function createAnalysisGraph(model: BaseChatModel, onProgress?: (step: string, message: string) => void) {
+  const nodes = createNodes(model, onProgress);
 
   return new StateGraph(RequirementAnalysisState)
     // classifier
@@ -508,12 +517,13 @@ export async function runAnalysisGraph(args: {
   retrievedContext: string;
   model: BaseChatModel;
   history?: { role: 'user' | 'assistant'; content: string }[];
+  onProgress?: (step: string, message: string) => void;
 }): Promise<RunAnalysisGraphOutput> {
   console.log(`[LangGraph] ========== GRAPH START ==========`);
   console.log(`[LangGraph] input: "${args.input.slice(0, 100)}"`);
   console.log(`[LangGraph] model: ${(args.model as any).model || 'unknown'}`);
 
-  const graph = createAnalysisGraph(args.model);
+  const graph = createAnalysisGraph(args.model, args.onProgress);
   const t0 = Date.now();
   const result = await graph.invoke({
     input: args.input,

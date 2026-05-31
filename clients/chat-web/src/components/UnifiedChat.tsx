@@ -133,7 +133,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
     }
 
     try {
-      const endpoint = route === 'analyze' ? '/api/ui-chat/chat/stream' : '/api/ui-chat/analyze';
+      const endpoint = route === 'analyze' ? '/api/ui-chat/analyze' : '/api/ui-chat/chat/stream';
       const aiMsg = await handleSSE(endpoint, text, ctrl);
 
       if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
@@ -155,6 +155,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
 
   const handleAction = async (comp: UIComponent, action: Record<string, unknown>) => {
     setLoading(true);
+    loadingRef.current = true;
     try {
       const resp = await uiAction(sessionId, { componentType: comp.type, payload: action });
       setMessages((prev) => [...prev, { role: 'ai', content: resp.message, components: resp.components }]);
@@ -162,8 +163,9 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
       // 确认提交后触发 LangGraph 深度分析
       const isConfirm = action.type === 'confirm' && action.confirmed === true;
       if (isConfirm) {
-        const collectedText = resp.message.replace('分析流程已启动。', '请对上述需求进行深度分析，输出功能分解、用户故事、验收标准和技术复杂度评估。');
-        loadingRef.current = true;
+        const card = (resp.components || []).find((c: any) => c.type === 'card') as any;
+        const fields = card?.sections?.map((s: any) => `${s.label}: ${s.value}`).join('\n') || '';
+        const collectedText = `请对以下需求进行深度分析，输出功能分解、用户故事、验收标准和技术复杂度评估：\n\n${fields}`;
         const ctrl = new AbortController();
         try {
           const aiMsg = await handleSSE('/api/ui-chat/analyze', collectedText, ctrl);
@@ -177,7 +179,10 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
       }
     } catch {
       setMessages((prev) => [...prev, { role: 'ai', content: '操作失败' }]);
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+      setStreamingContent('');
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

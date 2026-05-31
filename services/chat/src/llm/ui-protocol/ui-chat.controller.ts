@@ -99,6 +99,8 @@ export class UIChatController {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+
     try {
       const model = getModel(this.config, body.model);
       console.log(`[UIChat] analyze request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
@@ -117,11 +119,23 @@ export class UIChatController {
         }));
       }
 
+      // Heartbeat: keep SSE connection alive during long graph execution
+      heartbeat = setInterval(() => {
+        res.write(': ping\n\n');
+      }, 10_000);
+
       const result = await runAnalysisGraph({
         input: body.input,
         retrievedContext: body.retrievedContext || '',
         model,
         history,
+        onProgress: (step: string, message: string) => {
+          res.write(formatSSE({
+            messageType: 'progress',
+            timestamp: new Date().toISOString(),
+            payload: { step, message },
+          }));
+        },
       });
 
       console.log(`[UIChat] graph result | intent=${result.intent} | summaryLen=${(result.summary || '').length}`);
@@ -153,6 +167,7 @@ export class UIChatController {
         payload: { code: 'GRAPH_ERROR', message: (err as Error).message },
       }));
     } finally {
+      clearInterval(heartbeat);
       res.end();
     }
   }
