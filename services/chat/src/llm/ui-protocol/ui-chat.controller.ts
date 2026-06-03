@@ -44,7 +44,7 @@ function writeSSE(res: any, data: string) {
   res.flush?.();
 }
 
-@Controller('api/ui-chat')
+@Controller('chat/ui-chat')
 export class UIChatController {
   constructor(
     private readonly uiFlow: UIFlowService,

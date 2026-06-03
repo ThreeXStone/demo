@@ -134,10 +134,10 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
 
     try {
       const endpoint = route === 'analyze'
-        ? '/api/ui-chat/requirement/collect'
+        ? '/chat/ui-chat/requirement/collect'
         : route === 'query'
-          ? '/api/ui-chat/query'
-          : '/api/ui-chat/chat';
+          ? '/chat/ui-chat/query'
+          : '/chat/ui-chat/chat';
       const aiMsg = await handleSSE(endpoint, text, ctrl);
 
       if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
@@ -172,7 +172,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif }: P
         const collectedText = `请对以下需求进行深度分析，输出功能分解、用户故事、验收标准和技术复杂度评估：\n\n${fields}`;
         const ctrl = new AbortController();
         try {
-          const aiMsg = await handleSSE('/api/ui-chat/analyze', collectedText, ctrl);
+          const aiMsg = await handleSSE('/chat/ui-chat/analyze', collectedText, ctrl);
           if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
           if (convId) saveMessage(convId, 'ai', aiMsg.content).catch(() => {});
         } catch {

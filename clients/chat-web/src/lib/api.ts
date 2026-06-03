@@ -35,10 +35,10 @@ async function request(path: string, options: RequestInit = {}) {
 export interface AuthResult { token: string; user: { id: string; email: string; name: string | null }; }
 
 export async function login(email: string, password: string): Promise<AuthResult> {
-  return request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+  return request("/chat/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
 }
 export async function register(email: string, password: string, name?: string): Promise<AuthResult> {
-  return request("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, name }) });
+  return request("/chat/auth/register", { method: "POST", body: JSON.stringify({ email, password, name }) });
 }
 
 // --- Conversations ---
@@ -46,21 +46,21 @@ export async function register(email: string, password: string, name?: string): 
 export interface Conversation { id: string; title: string; userId: string; createdAt: string; updatedAt: string; }
 export interface Message { id: string; conversationId: string; role: string; content: string; metadata?: Record<string, unknown>; createdAt: string; }
 
-export async function listConversations(): Promise<Conversation[]> { return request("/api/conversations"); }
+export async function listConversations(): Promise<Conversation[]> { return request("/chat/conversations"); }
 export async function createConversation(title?: string): Promise<Conversation> {
-  return request("/api/conversations", { method: "POST", body: JSON.stringify({ title }) });
+  return request("/chat/conversations", { method: "POST", body: JSON.stringify({ title }) });
 }
 export async function getMessages(conversationId: string): Promise<Message[]> {
-  return request(`/api/conversations/${conversationId}/messages`);
+  return request(`/chat/conversations/${conversationId}/messages`);
 }
 export async function saveMessage(conversationId: string, role: string, content: string): Promise<Message> {
-  return request(`/api/conversations/${conversationId}/messages`, {
+  return request(`/chat/conversations/${conversationId}/messages`, {
     method: "POST",
     body: JSON.stringify({ role, content }),
   });
 }
 export async function deleteConversation(conversationId: string): Promise<void> {
-  return request(`/api/conversations/${conversationId}`, { method: "DELETE" });
+  return request(`/chat/conversations/${conversationId}`, { method: "DELETE" });
 }
 
 // --- Documents ---
@@ -78,25 +78,25 @@ async function uploadRequest(path: string, body: FormData) {
   return res.json();
 }
 export async function uploadDocument(file: File): Promise<Document> {
-  const fd = new FormData(); fd.append("file", file); return uploadRequest("/api/documents/upload", fd);
+  const fd = new FormData(); fd.append("file", file); return uploadRequest("/chat/documents/upload", fd);
 }
-export async function listDocuments(): Promise<Document[]> { return request("/api/documents"); }
-export async function deleteDocument(id: string): Promise<void> { return request(`/api/documents/${id}`, { method: "DELETE" }); }
+export async function listDocuments(): Promise<Document[]> { return request("/chat/documents"); }
+export async function deleteDocument(id: string): Promise<void> { return request(`/chat/documents/${id}`, { method: "DELETE" }); }
 export async function processDocument(id: string): Promise<{ chunkCount: number }> {
-  return request(`/api/documents/${id}/process`, { method: "POST" });
+  return request(`/chat/documents/${id}/process`, { method: "POST" });
 }
 
 // --- Notifications ---
 
 export interface NotificationEvent { id: string; userId: string; type: "upload"|"process"|"embed"|"complete"|"error"; message: string; details?: Record<string, unknown>; createdAt: string; }
 export async function getNotifications(since?: string): Promise<NotificationEvent[]> {
-  return request(`/api/notifications${since ? `?since=${encodeURIComponent(since)}` : ""}`);
+  return request(`/chat/notifications${since ? `?since=${encodeURIComponent(since)}` : ""}`);
 }
 
 // --- UI Chat (chat service 3002) ---
 
 export async function uiAction(sessionId: string, action: UIAction): Promise<AIUIResponse> {
-  const res = await fetch("/api/ui-chat/requirement/action", {
+  const res = await fetch("/chat/ui-chat/requirement/action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId, action }),

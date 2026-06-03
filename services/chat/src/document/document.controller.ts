@@ -5,7 +5,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { DocumentService } from './document.service';
 
-@Controller('api/documents')
+@Controller('chat/documents')
 export class DocumentController {
   constructor(private readonly documentService: DocumentService) {}
 
