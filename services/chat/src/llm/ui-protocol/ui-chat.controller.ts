@@ -79,6 +79,7 @@ export class UIChatController {
     try {
       const model = getModel(this.config, body.model);
       const history = await this.getHistory(body.conversationId);
+      console.log(`[UIChat] chat request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
 
       const stream = await model.stream([
@@ -100,8 +101,10 @@ export class UIChatController {
         }
       }
 
+      console.log(`[UIChat] chat done | session=${body.sessionId}`);
       writeSSE(res, formatSSE({ messageType: 'done', timestamp: new Date().toISOString(), payload: null }));
     } catch (err) {
+      console.log(`[UIChat] chat error | session=${body.sessionId} | ${(err as Error).message}`);
       writeSSE(res, formatSSE({
         messageType: 'error',
         timestamp: new Date().toISOString(),
@@ -127,6 +130,7 @@ export class UIChatController {
     try {
       const model = getModel(this.config, body.model);
       const history = await this.getHistory(body.conversationId);
+      console.log(`[UIChat] query request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
 
       const stream = await model.stream([
@@ -148,8 +152,10 @@ export class UIChatController {
         }
       }
 
+      console.log(`[UIChat] query done | session=${body.sessionId}`);
       writeSSE(res, formatSSE({ messageType: 'done', timestamp: new Date().toISOString(), payload: null }));
     } catch (err) {
+      console.log(`[UIChat] query error | session=${body.sessionId} | ${(err as Error).message}`);
       writeSSE(res, formatSSE({
         messageType: 'error',
         timestamp: new Date().toISOString(),
@@ -254,6 +260,7 @@ export class UIChatController {
       console.log(`[UIChat] graph result | intent=${result.intent} | summaryLen=${(result.summary || '').length}`);
       writeSSE(res, formatSSE({ messageType: 'done', timestamp: new Date().toISOString(), payload: null }));
     } catch (err) {
+      console.log(`[UIChat] analyze error | session=${body.sessionId} | ${(err as Error).message}`);
       writeSSE(res, formatSSE({
         messageType: 'error',
         timestamp: new Date().toISOString(),
