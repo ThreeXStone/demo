@@ -18,7 +18,7 @@ export class LogsController {
 
     // 实时推送
     const unsubscribe = onLog((entry) => {
-      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+      try { res.write(`data: ${JSON.stringify(entry)}\n\n`); } catch {}
     });
 
     req.on('close', () => {
