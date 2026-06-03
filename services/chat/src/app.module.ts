@@ -4,6 +4,7 @@ import { UIProtocolModule } from './llm/ui-protocol/ui-protocol.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { DocumentModule } from './document/document.module';
 import { NotificationController } from './notification/notification.controller';
+import { LogsController } from './logging/logs.controller';
 import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -19,7 +20,7 @@ import { PrismaModule } from './prisma/prisma.module';
     DocumentModule,
     UIProtocolModule,
   ],
-  controllers: [NotificationController],
+  controllers: [NotificationController, LogsController],
   providers: [],
 })
 export class AppModule {}
