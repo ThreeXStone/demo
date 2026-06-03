@@ -82,12 +82,14 @@ const CLASSIFIER_PROMPT = `你是意图分类器。分析用户输入，判断�
 - "需要一个用户登录功能"
 
 ### query — 信息查询
-用户想要查询某个需求的状态、进度或已有信息。
-关键特征：包含需求编号（如 REQ-xxx）、询问进度/状态/结果
+用户想要查询、查看、了解已有需求的信息，而非分析新需求。
+关键特征：包含"查询""查看""了解""之前""历史""状态""进度""结果"等查询词，或包含需求编号（如 REQ-xxx）
 示例：
 - "查询 REQ-20240315-001 的状态"
 - "REQ-20240315-001 的进度如何"
-- "查看 REQ-20240315-001 的风险分析报告"
+- "查看之前的需求"
+- "我想要查询一下之前的需求"
+- "看看历史上的需求有哪些"
 
 ### chat — 普通闲聊
 用户进行非业务相关的对话。
@@ -98,36 +100,14 @@ const CLASSIFIER_PROMPT = `你是意图分类器。分析用户输入，判断�
 - "谢谢你的帮助"
 
 ## 优先级规则
-1. 以"分析"/"评估"/"评审"开头 + 包含功能描述 → analyze（即使有 REQ 编号）
-2. 包含"查询/查看/状态/进度"等查询词 → query
-3. "查询XXX的分析报告" → query（"查询"优先级 > "分析"）
-4. 包含需求编号（REQ-\\d+）且无功能描述 → query
-5. 明确闲聊/问候 → chat
-6. 包含需求描述/功能开发/实现方案 → analyze
-7. 默认 → analyze
+1. 包含"查询""查看""了解""之前""历史""状态""进度"等查询词 → query（即使句子中有"需求"二字）
+2. 以"分析"/"评估"/"评审"开头 + 包含功能描述 → analyze
+3. 包含需求编号（REQ-\\d+）且无分析性描述 → query
+4. 明确闲聊/问候 → chat
+5. 包含功能描述/实现方案/开发讨论 → analyze
+6. 默认 → chat
 
 只输出 JSON：{"intent":"analyze|query|chat","reasoning":"分类理由"}`;
-
-// --- Keyword Fallback ---
-
-function keywordClassify(input: string): 'analyze' | 'query' | 'chat' {
-  const hasReqId = /REQ-\d+/i.test(input);
-  const queryWords = /查询|查看|状态|进度|进展|怎么样|如何|是什么|有没有|在哪|什么时间/;
-  const analysisWords = /需求分析|分析需求|需求评估|评估需求|需求评审|评审需求|需求设计|设计方案|实现方案|需求规格|系统架构|模块设计|功能需求|需求描述|开发|登录模块|注册模块|用户模块/;
-
-  // 包含"需求"或分析类关键词 → analyze
-  if (analysisWords.test(input) || /需求/.test(input)) return 'analyze';
-  // 查询类 → query
-  if (hasReqId || queryWords.test(input)) return 'query';
-  // 默认 → chat
-  return 'chat';
-}
-
-function classifyAndLog(input: string): 'analyze' | 'query' | 'chat' {
-  const intent = keywordClassify(input);
-  console.log(`[LangGraph] classify: "${input.slice(0, 80)}" → ${intent}`);
-  return intent;
-}
 
 // --- JSON Parser ---
 
@@ -308,10 +288,29 @@ const createNodes = (
   classifierNode: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    // DeepSeek 模型 invoke 可能无限挂起，直接使用关键词分类
-    const intent = classifyAndLog(state.input);
-    onProgress?.('classifier', '意图识别完成');
-    return { intent };
+    try {
+      const response = await withTimeout(
+        model.invoke([
+          new SystemMessage(CLASSIFIER_PROMPT),
+          new HumanMessage(state.input),
+        ]),
+        'classifier',
+      );
+      const text = typeof response.content === 'string'
+        ? response.content
+        : Array.isArray(response.content)
+          ? response.content.map((c: any) => c.text || '').join('')
+          : '';
+      const parsed = parseJson(text, { intent: 'chat', reasoning: '' });
+      const validated = intentSchema.parse(parsed);
+      console.log(`[LangGraph] classify → ${validated.intent} | ${validated.reasoning}`);
+      onProgress?.('classifier', '意图识别完成');
+      return { intent: validated.intent };
+    } catch (e) {
+      console.log(`[LangGraph] classify failed: ${(e as Error).message}, defaulting to chat`);
+      onProgress?.('classifier', '意图识别完成');
+      return { intent: 'chat' };
+    }
   },
 
   // ====== Fast-Path Handlers (with timeout) ======
@@ -376,6 +375,7 @@ const createNodes = (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     try {
+      console.log(`[LangGraph] ========== ANALYSIS PIPELINE START ==========`);
       const agent = createExtractAgent(model);
       console.log(`[LangGraph] extractStep: streaming LLM...`);
       let fullText = '';
@@ -482,12 +482,14 @@ const createNodes = (
 // --- Route Function ---
 
 function routeByIntent(state: typeof RequirementAnalysisState.State): string {
-  switch (state.intent) {
-    case 'analyze': return 'extractStep';
-    case 'query': return 'queryHandler';
-    case 'chat': return 'chatHandler';
-    default: return 'chatHandler';
-  }
+  const routeMap: Record<string, string> = {
+    analyze: 'extractStep',
+    query: 'queryHandler',
+    chat: 'chatHandler',
+  };
+  const route = routeMap[state.intent] || 'chatHandler';
+  console.log(`[LangGraph] route: intent=${state.intent} → ${route}`);
+  return route;
 }
 
 // --- Graph Factory ---
@@ -552,22 +554,15 @@ export async function runAnalysisGraph(args: {
   onProgress?: (step: string, message: string) => void;
   onToken?: (content: string) => void;
 }): Promise<RunAnalysisGraphOutput> {
-  console.log(`[LangGraph] ========== GRAPH START ==========`);
-  console.log(`[LangGraph] input: "${args.input.slice(0, 100)}"`);
-  console.log(`[LangGraph] model: ${(args.model as any).model || 'unknown'}`);
-
   const graph = createAnalysisGraph(args.model, args.onProgress, args.onToken);
-  const t0 = Date.now();
   const result = await graph.invoke({
     input: args.input,
     retrievedContext: args.retrievedContext,
     history: args.history || [],
     messages: [],
   });
-  const totalElapsed = Date.now() - t0;
 
   const intent = (result.intent as 'analyze' | 'query' | 'chat') || 'analyze';
-  console.log(`[LangGraph] intent classified: ${intent} | totalTime: ${totalElapsed}ms`);
 
   const steps: Record<string, string> = { classifier: intent };
 
