@@ -1,6 +1,6 @@
 # 基本规范
 
-## 永远使用英文回答（代码、专有名词除外）
+## 永远使用中文回答（代码、专有名词除外）
 
 # 项目概览
 
@@ -9,53 +9,92 @@
 
 ```
 .
-├── clients/           # 前端客户端
-│   └── web/          # Next.js Web 应用
-├── services/         # 后端服务
-│   └── api/          # NestJS API 服务
+├── clients/
+│   └── chat-web/        # Next.js 前端 (端口 3003)
+│       └── src/
+│           ├── app/          # 页面 (page.tsx, layout.tsx)
+│           ├── components/   # 组件 (UnifiedChat, LogPanel, NotificationPanel 等)
+│           │   └── ai-ui/    # AI UI 组件 (DynamicForm, SelectionCard 等)
+│           └── lib/          # API 客户端 & 类型定义
+├── services/
+│   └── chat/            # NestJS 后端 (端口 3002)
 │       ├── src/
-│       │   ├── config/      # 配置文件
-│       │   ├── llm/         # LLM 模块（controller/service）
-│       │   │   ├── memory/  # Memory 相关服务
-│       │   ├── main.ts      # 入口文件
+│       │   ├── auth/              # 认证模块
+│       │   ├── conversation/      # 对话管理 (CRUD)
+│       │   ├── document/          # 文档上传/处理
+│       │   ├── notification/      # 通知 (SSE 轮询)
+│       │   ├── logging/           # 日志捕获 & SSE 日志流
+│       │   ├── llm/
+│       │   │   ├── agents/        # LangGraph agent 子任务
+│       │   │   ├── graph/         # LangGraph 需求分析图
+│       │   │   └── ui-protocol/   # UI Protocol 控制器 & 服务
+│       │   ├── prisma/            # 数据库服务
+│       │   ├── main.ts            # 入口文件
 │       │   └── app.module.ts
-├── packages/         # 共享包
-├── infra/            # 基础设施
-└── .claude/          # Claude 配置和记忆
+│       ├── prisma/          # Prisma schema
+│       └── .env             # 环境变量 (API key, DB URL)
+├── packages/
+│   └── contracts/       # 共享类型契约
+├── infra/
+│   └── compose/         # Docker Compose (PostgreSQL)
+└── .claude/             # Claude 配置
 ```
+
+## 端口分配
+
+| 服务 | 端口 |
+|------|------|
+| 前端 (Next.js) | 3003 |
+| 后端 (NestJS) | 3002 |
 
 ## 常用命令
 
 ```bash
-# 开发所有服务
-bun run dev
+# 安装依赖 (根目录)
+bun install
 
-# 构建所有项目
-bun run build
+# 启动后端 (--transpile-only 跳过类型检查)
+cd services/chat && bunx ts-node --transpile-only src/main.ts
+
+# 启动前端
+cd clients/chat-web && bun run dev
+
+# 生成 Prisma Client (新增依赖或 schema 变更后)
+cd services/chat && bunx prisma generate
 
 # 类型检查
-bun run typecheck
-
-# 单独启动 API 服务
-cd services/api && bunx ts-node src/main.ts
+cd services/chat && bunx tsc --noEmit
+cd clients/chat-web && bunx tsc --noEmit
 ```
 
 ## 已实现功能
 
-### LLM 模块 (services/api/src/llm/)
+### 后端
 
-1. **基础 LLM 服务** - `LlmService`
-2. **需求结构化抽取** - `RequirementService`
-3. **多轮对话 Memory** - `RunnableMemoryService`
-   - `POST /api/memory/chat` - 发送消息
-   - `GET /api/memory/history?sessionId=xxx` - 获取历史
-   - `DELETE /api/memory/clear?sessionId=xxx` - 清除会话
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| AuthModule | `/chat/auth` | JWT 登录/注册 |
+| ConversationModule | `/chat/conversations` | 对话和消息 CRUD |
+| DocumentModule | `/chat/documents` | 文件上传、处理、向量化 |
+| UIProtocolModule | `/chat/ui-chat` | SSE 流式 LLM 对话、需求分析 |
+| LogsController | `/chat/logs/stream` | SSE 实时日志流 |
+| NotificationController | `/chat/notifications` | 通知轮询 |
+
+### 前端
+
+| 组件 | 说明 |
+|------|------|
+| `UnifiedChat` | 主聊天界面，SSE 流式显示 |
+| `LogPanel` | 深色终端风格日志面板，EventSource 实时接收 |
+| `NotificationPanel` | 右侧滑出通知面板，3s 轮询 |
+| `ConversationList` | 左侧对话列表 |
+| `SidebarDocs` | 文档上传侧边栏 |
 
 ## 技术栈
 
-- 前端：Next.js
-- 后端：NestJS
-- LLM 框架：LangChain (@langchain/core, @langchain/openai)
+- 前端：Next.js 15, React 19, Tailwind CSS 4
+- 后端：NestJS, LangChain, LangGraph
+- 数据库：PostgreSQL + Prisma v7
 - 包管理：Bun
 - 构建：Turbo
 
@@ -198,3 +237,8 @@ cd services/api && bunx ts-node src/main.ts
     3. HTTP 层设 25s 超时（`configuration: { timeout: 25_000 }`）
     4. 默认意图设为 `chat`（避免未识别输入触发 5 节点管道挂死）
   📌 原因：DeepSeek API 有间歇性"静默挂死"问题——TCP 连接建立后无响应，Promise 既不 resolve 也不 reject，导致 SSE 流永久卡住。`Promise.race` 无法中断底层 HTTP 请求，LangChain 的 `timeout` 参数不会传给 OpenAI SDK
+
+<!-- Git Worktree (2026-06-03) -->
+- ❌ 错误做法：创建 worktree 后直接启动服务，发现 API key 报错、数据库连不上
+  ✅ 正确做法：创建 worktree 后检查 `.env` 等 gitignore 文件是否存在，缺失则 `cp` 从主仓库复制
+  📌 原因：`git worktree add` 只检出 tracked 文件，`.gitignore` 中的文件（`.env`、`node_modules` 等）不会被复制到 worktree
