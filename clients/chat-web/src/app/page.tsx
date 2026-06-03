@@ -6,6 +6,7 @@ import LoginForm from "@/components/LoginForm";
 import ConversationList from "@/components/ConversationList";
 import SidebarDocs from "@/components/SidebarDocs";
 import NotificationPanel from "@/components/NotificationPanel";
+import LogPanel from "@/components/LogPanel";
 import UnifiedChat from "@/components/UnifiedChat";
 
 export default function Home() {
@@ -14,6 +15,7 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [chatKey, setChatKey] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
 
   useEffect(() => {
     setAuthorized(hasToken());
@@ -62,10 +64,12 @@ export default function Home() {
         <UnifiedChat
           conversationId={activeId}
           onToggleNotif={() => setNotifOpen(!notifOpen)}
+          onToggleLog={() => setLogOpen(!logOpen)}
         />
       </div>
 
       <NotificationPanel open={notifOpen} onToggle={() => setNotifOpen(!notifOpen)} />
+      <LogPanel open={logOpen} onToggle={() => setLogOpen(!logOpen)} />
     </div>
   );
 }

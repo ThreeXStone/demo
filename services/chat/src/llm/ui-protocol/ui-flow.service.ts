@@ -166,7 +166,7 @@ export class UIFlowService {
       if (reqs.length === 0) return ok('暂无已提交的需求记录。', [
         { type: 'action_buttons', title: '操作', buttons: [{ label: '提交新需求', value: 'new_req', style: 'primary' }] },
       ]);
-      const list = reqs.map((r) => `- **${r.reqId}** ${r.title} [${r.priority}] ${r.status}`).join('\n');
+      const list = reqs.map((r: any) => `- **${r.reqId}** ${r.title} [${r.priority}] ${r.status}`).join('\n');
       return ok(`共 ${reqs.length} 条需求：\n\n${list}`, [
         { type: 'action_buttons', title: '操作', buttons: [
           { label: '提交新需求', value: 'new_req', style: 'primary' },
