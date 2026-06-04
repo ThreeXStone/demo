@@ -253,7 +253,53 @@ cd clients/chat-web && bunx tsc --noEmit
   ✅ 正确做法：在 `classifierNode` 开头检测 `state.clarifyAnswer`，存在时直接返回 `intent: 'analyze'`，跳过 LLM 分类
   📌 原因：澄清模式下用户回答是给 clarifyStep 处理的，不应被独立分类。短输入没有足够语义信号，classifier 会误判为闲聊
 
-<!-- SSE markdown 兜底 (2026-06-04) -->
-- ❌ 错误做法：只依赖 SSE markdown 消息设置 `content`，无兜底导致前端显示「空响应」
-  ✅ 正确做法：在 `handleSSE` 返回前检查：若 `content` 为空但 `components` 中有 `clarify_question`，直接用 question 文本填充 content
-  📌 原因：SSE 流式数据在 TCP 层面可能合并/切割，或 `: ping` 心跳行插入，导致 markdown 消息的 JSON 解析偶发丢失。UI 组件中的数据可作为兜底
+<!-- LangGraph streamEvents v2 兼容性 (2026-06-04) -->
+- ❌ 错误做法：`streamEvents` 中通过 `event.name.includes('StateGraph')` 捕获顶层图最终状态
+  ✅ 正确做法：在 `on_chain_end` 事件中累积各业务节点的 partial state 输出（`Object.assign(accumulated, output)`），循环结束后从累积状态构建结果
+  📌 原因：LangGraph 1.3.2 的 streamEvents v2 中，顶层图完成事件的 `event.name` 不包含 "StateGraph" 字符串，匹配不到导致 `finalState` 始终为 null，触发 fallback `graph.invoke()` 把整张图重复执行了一遍
+
+<!-- streamEvents token 过滤 (2026-06-04) -->
+- ❌ 错误做法：`streamEvents` 不加过滤地把所有 LLM token 流式推送到前端
+  ✅ 正确做法：定义 `SKIP_TOKEN_NODES` 列表，对 JSON 输出节点（classifier、extractStep、clarifyStep）、invoke-only 节点（riskStep）、子图节点（analysisStep）不推送 token
+  📌 原因：`streamEvents` 的 `on_chat_model_stream` 会捕获**所有** LLM 调用的底层流事件，包括 `invoke()` 和子图内部的 ReAct agent 调用。只有 `queryHandler`、`chatHandler`、`summaryStep` 需要流式展示
+
+<!-- 前端澄清模式恢复 (2026-06-04) -->
+- ❌ 错误做法：刷新页面后继续在原会话中输入，期望开始新的需求分析流程
+  ✅ 正确做法：检查是否处于澄清模式（输入框上方有澄清问题提示），或新建一个会话
+  📌 原因：前端 `loadMessages` 时会检测历史消息中是否有未回答的 `clarify_question` 组件，有则自动恢复 `isInClarifyMode = true`。此后所有输入都会被当作澄清回答路由到 `/analyze`
+
+---
+
+## 架构变更记录
+
+### 2026-06-04: 引入 OrchestratorService 编排层
+
+**变更前**：`UIChatController`（425 行）直接耦合 SSE、LangGraph 调用、DB 持久化、UI 流程，`getModel()` 内联在 controller 中。
+
+**变更后**：增加编排层，实现职责分离。
+
+```
+UIChatController (controller, ~400行)
+  ├── OrchestratorService  (编排层, 新增, 296行)
+  │     ├── orchestrate()          → runAnalysisGraph
+  │     ├── streamOrchestrate()    → streamAnalysisGraph (AsyncGenerator)
+  │     └── asRunnable()           → RunnableLambda
+  ├── model.factory.ts     (模型工厂, 新增, 44行)
+  ├── ui-types.ts          (流事件类型, 新增, 28行)
+  └── ui-action.parser.ts  (UI操作解析, 新增, 44行)
+```
+
+**关键变化**：
+
+| 维度 | 变更前 | 变更后 |
+|------|--------|--------|
+| 模型创建 | `getModel()` 内联在 controller | `model.factory.ts` 统一创建 + 缓存 |
+| 图调用 | controller 直接调 `runAnalysisGraph(onProgress, onToken)` | `OrchestratorService.streamOrchestrate()` 委托 |
+| 流事件 | 无标准化，callback 直写 SSE | 标准化 `OrchestratorStreamEvent` 类型（agent_start/token/agent_end/log/final） |
+| 流式图 | 无 | `streamAnalysisGraph()` 基于 `graph.streamEvents('v2')` |
+| LangChain 集成 | 无 | `OrchestratorService.asRunnable()` 包装为 RunnableLambda |
+
+**Controller 保留职责**：HTTP/SSE 适配（`setupSSE`/`writeSSE`）、DB 操作（`getSystemMetadata`/`upsertSystemMetadata`/`getHistory`）、非 LangGraph 端点（`/chat`、`/query`、`/requirement/*`）。
+
+**未迁移**：`model-config` 模块（demo 无对应 DB 表）、`sse` 模块（autix-demo 的 SseService 用于 task_events 广播，与 chat SSE 无关）、`UIResponseService`（DeepSeek 不支持 `withStructuredOutput`）。
+
