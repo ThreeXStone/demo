@@ -62,6 +62,13 @@ export interface UIActionBtns {
   buttons: { label: string; value: string; style?: 'primary' | 'secondary' | 'danger' }[];
 }
 
+export interface UIClarifyQuestion {
+  type: 'clarify_question';
+  questionId: string;
+  question: string;
+  options: string[];
+}
+
 export type UIComponent =
   | UIText
   | UISelection
@@ -70,7 +77,8 @@ export type UIComponent =
   | UICard
   | UISteps
   | UITable
-  | UIActionBtns;
+  | UIActionBtns
+  | UIClarifyQuestion;
 
 export interface AIUIResponse {
   version?: string;

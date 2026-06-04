@@ -38,6 +38,9 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
     typeof window !== 'undefined' ? localStorage.getItem('preferred_model') || 'deepseek-v4-pro' : 'deepseek-v4-pro'
   );
   const [streamingContent, setStreamingContent] = useState('');
+  const [isInClarifyMode, setIsInClarifyMode] = useState(false);
+  const [currentAnalyzeSessionId, setCurrentAnalyzeSessionId] = useState<string | null>(null);
+  const [currentClarifyQuestionId, setCurrentClarifyQuestionId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -60,11 +63,11 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
     t.style.height = Math.min(t.scrollHeight, 200) + 'px';
   };
 
-  const handleSSE = async (endpoint: string, text: string, ctrl: AbortController): Promise<ChatMsg> => {
+  const handleSSE = async (endpoint: string, text: string, ctrl: AbortController, extraBody?: Record<string, unknown>): Promise<ChatMsg> => {
     const resp = await fetch(`http://localhost:3002${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, input: text, model, conversationId: convId }),
+      body: JSON.stringify({ sessionId, input: text, model, conversationId: convId, ...extraBody }),
       signal: ctrl.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -96,7 +99,16 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             if (msg.messageType === 'markdown') {
               content += (msg.payload as any).content || '';
               setStreamingContent(content);
-            } else if (msg.messageType === 'ui') components = (msg.payload as any).components;
+            } else if (msg.messageType === 'ui') {
+              const comps = (msg.payload as any).components || [];
+              components = comps;
+              // 检测 clarify_question 组件，进入澄清模式
+              const clarifyQ = comps.find((c: any) => c.type === 'clarify_question');
+              if (clarifyQ) {
+                setIsInClarifyMode(true);
+                setCurrentClarifyQuestionId(clarifyQ.questionId);
+              }
+            }
             else if (msg.messageType === 'done') {}
             else if (msg.messageType === 'error') {
               throw new Error((msg.payload as any).message || 'Stream error');
@@ -109,6 +121,12 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
       }
     } finally {
       reader.cancel().catch(() => {});
+    }
+
+    // 兜底：如果 content 为空但 UI 中有 clarify_question，用 question 文本填充
+    if (!content && components) {
+      const clarifyQ = components.find((c: any) => c.type === 'clarify_question') as any;
+      if (clarifyQ?.question) content = `**${clarifyQ.question}**`;
     }
 
     return { role: 'ai', content: content || '(空响应)', components: components || undefined };
@@ -131,6 +149,36 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
     let cid = convId;
     if (!cid && route !== 'query') {
       try { const conv = await createConversation(text.slice(0, 20)); cid = conv.id; } catch {}
+    }
+
+    // 澄清模式下直接走 /analyze，带 clarifyAnswer
+    if (isInClarifyMode && currentClarifyQuestionId && currentAnalyzeSessionId) {
+      try {
+        const aiMsg = await handleSSE('/chat/ui-chat/analyze', text, ctrl, {
+          analyzeSessionId: currentAnalyzeSessionId,
+          clarifyAnswer: {
+            questionId: currentClarifyQuestionId,
+            answer: text,
+            source: 'text',
+          },
+        });
+        if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+        if (cid) {
+          saveMessage(cid, 'human', text).catch(() => {});
+          saveMessage(cid, 'ai', aiMsg.content).catch(() => {});
+        }
+        setIsInClarifyMode(false);
+        setCurrentClarifyQuestionId(null);
+      } catch (err: any) {
+        if (err.name !== 'AbortError' && loadingRef.current) {
+          setMessages((prev) => [...prev, { role: 'ai', content: `澄清提交失败: ${err.message}` }]);
+        }
+      } finally {
+        setLoading(false);
+        loadingRef.current = false;
+        setStreamingContent('');
+      }
+      return;
     }
 
     try {
@@ -159,6 +207,37 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
   };
 
   const handleAction = async (comp: UIComponent, action: Record<string, unknown>) => {
+    // 澄清芯片点击 → 直接走 SSE /analyze
+    if (action.type === 'clarify_answer') {
+      setLoading(true);
+      loadingRef.current = true;
+      const ctrl = new AbortController();
+      try {
+        const aiMsg = await handleSSE('/chat/ui-chat/analyze', action.answer as string, ctrl, {
+          analyzeSessionId: currentAnalyzeSessionId,
+          clarifyAnswer: {
+            questionId: action.questionId as string,
+            answer: action.answer as string,
+            source: action.source as string,
+          },
+        });
+        if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+        if (convId) {
+          saveMessage(convId, 'human', action.answer as string).catch(() => {});
+          saveMessage(convId, 'ai', aiMsg.content).catch(() => {});
+        }
+        setIsInClarifyMode(false);
+        setCurrentClarifyQuestionId(null);
+      } catch {
+        if (loadingRef.current) setMessages((prev) => [...prev, { role: 'ai', content: '澄清提交失败' }]);
+      } finally {
+        setLoading(false);
+        loadingRef.current = false;
+        setStreamingContent('');
+      }
+      return;
+    }
+
     setLoading(true);
     loadingRef.current = true;
     try {
@@ -168,12 +247,16 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
       // 确认提交后触发 LangGraph 深度分析
       const isConfirm = action.type === 'confirm' && action.confirmed === true;
       if (isConfirm) {
+        const sid = crypto.randomUUID();
+        setCurrentAnalyzeSessionId(sid);
         const card = (resp.components || []).find((c: any) => c.type === 'card') as any;
         const fields = card?.sections?.map((s: any) => `${s.label}: ${s.value}`).join('\n') || '';
         const collectedText = `请对以下需求进行深度分析，输出功能分解、用户故事、验收标准和技术复杂度评估：\n\n${fields}`;
         const ctrl = new AbortController();
         try {
-          const aiMsg = await handleSSE('/chat/ui-chat/analyze', collectedText, ctrl);
+          const aiMsg = await handleSSE('/chat/ui-chat/analyze', collectedText, ctrl, {
+            analyzeSessionId: sid,
+          });
           if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
           if (convId) saveMessage(convId, 'ai', aiMsg.content).catch(() => {});
         } catch {

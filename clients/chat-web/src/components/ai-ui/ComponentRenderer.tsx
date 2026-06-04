@@ -65,6 +65,30 @@ export default function ComponentRenderer({ component, onAction }: Props) {
           onAction={onAction}
         />
       );
+    case 'clarify_question':
+      return (
+        <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+          <div className="px-4 py-3 border-b border-gray-100">
+            <h4 className="text-sm font-semibold text-gray-800">{component.question}</h4>
+          </div>
+          <div className="p-3 space-y-1">
+            {component.options.map((opt) => (
+              <button
+                key={opt}
+                onClick={() => onAction({
+                  type: 'clarify_answer',
+                  questionId: component.questionId,
+                  answer: opt,
+                  source: 'chip',
+                })}
+                className="w-full text-left px-4 py-3 rounded-lg border border-gray-100 hover:border-gray-300 hover:bg-gray-50 transition-all"
+              >
+                <span className="text-sm font-medium text-gray-800">{opt}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
     case 'text':
       return (
         <div className="prose prose-invert prose-sm max-w-none">

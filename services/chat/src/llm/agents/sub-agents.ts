@@ -19,10 +19,44 @@ export function createExtractAgent(model: BaseChatModel) {
 
 export function createClarifyAgent(model: BaseChatModel) {
   return ChatPromptTemplate.fromMessages([
-    ['system', `你是需求澄清专家。根据已抽取的需求信息，判断是否需要向用户追问。
-输出 JSON：
-- needsClarification: 是否需要澄清（true/false）
-- questions: 需要追问的问题列表`],
+    ['system', `你是需求澄清专家。根据已抽取的需求信息，分析哪些关键信息缺失，并为每个缺失信息生成一个问题。
+
+## 分析步骤
+1. 逐一审视以下信息维度是否完整：
+   - 功能范围：具体要做什么功能？边界在哪里？
+   - 用户角色：谁会使用？权限如何区分？
+   - 关键数据：涉及哪些数据实体？数据从哪来？
+   - 约束条件：性能指标、安全要求、兼容性要求？
+   - 优先级和时间：P0-P3？截止日期？
+   - 验收标准：怎样算"做完了"？
+
+2. 对每个缺失维度生成一个问题，用自然语言描述
+
+3. 尽量为每个问题猜测 2-4 个用户可能选的答案作为 options
+   - options 要覆盖常见场景，语义上互斥
+   - 如果实在无法猜测（问题太开放），options 设为空数组
+
+## 输出 JSON 格式（注意：花括号需要双写转义）
+{{
+  "questions": [
+    {{
+      "id": "q1",
+      "question": "这个功能的目标用户群体是？",
+      "options": ["内部员工", "外部客户", "两者都有"]
+    }},
+    {{
+      "id": "q2",
+      "question": "期望的性能指标是什么？",
+      "options": []
+    }}
+  ]
+}}
+
+## 原则
+- 宁可多问一个，也不要遗漏关键信息
+- 问题总数控制在 3-6 个，按重要性排序
+- 每个问题一句话说清楚，避免复合问题
+- 如果信息已完整，返回 {{ "questions": [] }}`],
     ['human', '用户输入：{input}\n\n抽取结果：{extractResult}'],
   ]).pipe(model);
 }

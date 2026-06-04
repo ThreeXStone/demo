@@ -60,6 +60,43 @@ export const RequirementAnalysisState = Annotation.Root({
     default: () => '',
     reducer: (_, next) => next,
   }),
+  // --- clarify ---
+  preExtracted: Annotation<Record<string, unknown> | null>({
+    default: () => null,
+    reducer: (_, next) => next,
+  }),
+  clarifyPlan: Annotation<Record<string, unknown> | null>({
+    default: () => null,
+    reducer: (_, next) => next,
+  }),
+  currentQuestion: Annotation<{ id: string; question: string; options: string[] } | null>({
+    default: () => null,
+    reducer: (_, next) => next,
+  }),
+  questions: Annotation<{ id: string; question: string; options: string[]; answer: string | null; retryCount: number; skipped: boolean; status: string }[]>({
+    default: () => [],
+    reducer: (_, next) => next,
+  }),
+  clarifiedData: Annotation<Record<string, string>>({
+    default: () => ({}),
+    reducer: (_, next) => next,
+  }),
+  clarifyAnswer: Annotation<{ questionId: string; answer: string; source: string } | null>({
+    default: () => null,
+    reducer: (_, next) => next,
+  }),
+  skipClarify: Annotation<boolean>({
+    default: () => false,
+    reducer: (_, next) => next,
+  }),
+  retryHint: Annotation<string>({
+    default: () => '',
+    reducer: (_, next) => next,
+  }),
+  needsClarification: Annotation<boolean>({
+    default: () => false,
+    reducer: (_, next) => next,
+  }),
 });
 
 // --- Classifier Zod Schema ---
@@ -282,12 +319,92 @@ const createNodes = (
   };
 
 
+  // --- clarify helpers ---
+
+  interface QuestionItem {
+    id: string;
+    question: string;
+    options: string[];
+    answer: string | null;
+    retryCount: number;
+    skipped: boolean;
+    status: string;
+  }
+
+  function isValidAnswer(text: string): boolean {
+    return text.trim().length >= 2;
+  }
+
+  function buildClarifyDone(questions: QuestionItem[]) {
+    const data: Record<string, string> = {};
+    for (const q of questions) {
+      if (q.status === 'answered' && q.answer) data[q.id] = q.answer;
+    }
+    return { needsClarification: false, clarifiedData: data, questions };
+  }
+
+  function buildClarifyReturn(plan: Record<string, unknown>, nextQ: QuestionItem) {
+    return {
+      needsClarification: true,
+      currentQuestion: nextQ,
+      questions: plan.questions as QuestionItem[],
+    };
+  }
+
+  function handleClarifyAnswer(
+    plan: Record<string, unknown>,
+    answer: { questionId: string; answer: string; source: string },
+  ) {
+    const questions = plan.questions as QuestionItem[];
+    const idx = (plan.currentQuestionIndex as number) || 0;
+    const q = questions[idx];
+
+    if (!q) return buildClarifyDone(questions);
+
+    // chip 点击直接接受
+    const valid = answer.source === 'chip' || isValidAnswer(answer.answer);
+
+    if (valid) {
+      q.answer = answer.answer;
+      q.status = 'answered';
+      // 找下一个 pending
+      const nextIdx = questions.findIndex((_q, i) => i > idx && _q.status === 'pending');
+      if (nextIdx === -1) return buildClarifyDone(questions);
+      plan.currentQuestionIndex = nextIdx;
+      return buildClarifyReturn(plan, questions[nextIdx]);
+    }
+
+    // 无效答案
+    q.retryCount++;
+    if (q.retryCount >= 2) {
+      q.skipped = true;
+      q.status = 'skipped';
+      const nextIdx = questions.findIndex((_q, i) => i > idx && _q.status === 'pending');
+      if (nextIdx === -1) return buildClarifyDone(questions);
+      plan.currentQuestionIndex = nextIdx;
+      return buildClarifyReturn(plan, questions[nextIdx]);
+    }
+    // 重问同一问题
+    return {
+      needsClarification: true,
+      currentQuestion: q,
+      questions,
+      retryHint: '请提供更详细的回答',
+    };
+  }
+
   return {
   // ====== Classifier ======
 
   classifierNode: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
+    // 澄清模式：跳过 LLM 分类，直接进入 analyze 管线
+    if (state.clarifyAnswer) {
+      console.log('[LangGraph] classify → analyze (clarify mode, skip LLM)');
+      onProgress?.('classifier', '意图识别完成');
+      return { intent: 'analyze' };
+    }
     try {
       const response = await withTimeout(
         model.invoke([
@@ -374,6 +491,13 @@ const createNodes = (
   extractStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
+    // 已有缓存，跳过 LLM 调用
+    const cached = state.preExtracted as Record<string, unknown> | null;
+    if (cached?.data && typeof cached.data === 'object' && Object.keys(cached.data as Record<string, unknown>).length > 0) {
+      console.log('[LangGraph] extractStep: using cached extracted data, skip LLM');
+      return { extracted: cached.data as Record<string, unknown> };
+    }
+
     try {
       console.log(`[LangGraph] ========== ANALYSIS PIPELINE START ==========`);
       const agent = createExtractAgent(model);
@@ -385,30 +509,85 @@ const createNodes = (
       }
       console.log(`[LangGraph] extractStep: stream done (${fullText.length} chars)`);
       onProgress?.('extractStep', '需求信息抽取完成');
-      return { extracted: parseJson(fullText, { title: state.input.slice(0, 50), type: 'functional', priority: 'P2', description: state.input, isComplete: false, missingFields: ['详细描述'] }) };
+      const extracted = parseJson(fullText, { title: state.input.slice(0, 50), reqType: 'functional', priority: 'P2', description: state.input, isComplete: false, missingFields: ['详细描述'] });
+      return { extracted: extracted as Record<string, unknown> };
     } catch (e) {
       console.log(`[LangGraph] extractStep: failed - ${(e as Error).message}`);
-      return { extracted: { title: state.input.slice(0, 50), type: 'functional', priority: 'P2', description: state.input, isComplete: true, missingFields: [] } };
+      return { extracted: { title: state.input.slice(0, 50), reqType: 'functional', priority: 'P2', description: state.input, isComplete: true, missingFields: [] } };
     }
   },
 
   clarifyStep: async (
     state: typeof RequirementAnalysisState.State,
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
+    // 无 conversationId，跳过澄清
+    if (state.skipClarify) {
+      console.log('[LangGraph] clarifyStep: skip (no conversationId)');
+      return { needsClarification: false, clarifiedData: {}, questions: [] };
+    }
+
+    const plan = state.clarifyPlan as Record<string, unknown> | null;
+    const answer = state.clarifyAnswer;
+
+    // 已有 plan 且本轮有回答 → 规则验证 + 更新 plan
+    if (plan && answer) {
+      return handleClarifyAnswer(plan, answer);
+    }
+
+    // 已有 plan 但本轮无回答（仅首轮之后可能发生）→ 继续当前问题
+    if (plan && !answer) {
+      const questions = plan.questions as QuestionItem[];
+      const idx = (plan.currentQuestionIndex as number) || 0;
+      if (idx < questions.length) {
+        return {
+          needsClarification: true,
+          currentQuestion: questions[idx],
+          questions,
+        };
+      }
+      return buildClarifyDone(questions);
+    }
+
+    // 无 plan（首轮）→ LLM 生成完整 questions 列表
     try {
       const agent = createClarifyAgent(model);
-      console.log(`[LangGraph] clarifyStep: streaming LLM...`);
-      let fullText = '';
-      const stream = await withTimeout(agent.stream({ input: state.input, extractResult: JSON.stringify(state.extracted) }), 'clarifyStep');
-      for await (const chunk of stream) {
-        fullText += extractText(chunk);
+      console.log(`[LangGraph] clarifyStep: generating question plan...`);
+      const result = await withTimeout(
+        agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }),
+        'clarifyStep',
+      );
+      const text = typeof result.content === 'string'
+        ? result.content
+        : Array.isArray(result.content) ? result.content.map((c: any) => c.text || '').join('') : '';
+      console.log(`[LangGraph] clarifyStep: LLM done (${text.length} chars)`);
+      const parsed = parseJson(text, { questions: [] });
+      const rawQuestions: Array<Record<string, unknown>> = parsed.questions || [];
+      const questions: QuestionItem[] = rawQuestions.map((q, i) => ({
+        id: (q.id as string) || `q${i + 1}`,
+        question: (q.question as string) || '',
+        options: Array.isArray(q.options) ? q.options as string[] : [],
+        answer: null,
+        retryCount: 0,
+        skipped: false,
+        status: 'pending',
+      }));
+
+      if (questions.length === 0) {
+        console.log('[LangGraph] clarifyStep: no questions needed, proceed to analysis');
+        onProgress?.('clarifyStep', '需求澄清完成');
+        return { needsClarification: false, clarifiedData: {}, questions: [] };
       }
-      console.log(`[LangGraph] clarifyStep: stream done (${fullText.length} chars)`);
-      onProgress?.('clarifyStep', '需求澄清分析完成');
-      return { clarified: parseJson(fullText, { needsClarification: false, questions: [] }) };
+
+      console.log(`[LangGraph] clarifyStep: ${questions.length} questions generated`);
+      onProgress?.('clarifyStep', `需求澄清：${questions.length} 个待确认问题`);
+      return {
+        needsClarification: true,
+        currentQuestion: questions[0],
+        questions,
+      };
     } catch (e) {
       console.log(`[LangGraph] clarifyStep: failed - ${(e as Error).message}`);
-      return { clarified: { needsClarification: false, questions: [] } };
+      return { needsClarification: false, clarifiedData: {}, questions: [] };
     }
   },
 
@@ -481,6 +660,12 @@ const createNodes = (
 
 // --- Route Function ---
 
+function routeAfterClarify(state: typeof RequirementAnalysisState.State): string {
+  const route = state.needsClarification ? 'END' : 'analysisStep';
+  console.log(`[UIChat] route: clarify → ${route}`);
+  return route === 'END' ? END : 'analysisStep';
+}
+
 function routeByIntent(state: typeof RequirementAnalysisState.State): string {
   const routeMap: Record<string, string> = {
     analyze: 'extractStep',
@@ -523,7 +708,10 @@ export function createAnalysisGraph(
     .addEdge('queryHandler', END)
     .addEdge('chatHandler', END)
     .addEdge('extractStep', 'clarifyStep')
-    .addEdge('clarifyStep', 'analysisStep')
+    .addConditionalEdges('clarifyStep', routeAfterClarify, {
+      analysisStep: 'analysisStep',
+      [END]: END,
+    })
     .addEdge('analysisStep', 'riskStep')
     .addEdge('riskStep', 'summaryStep')
     .addEdge('summaryStep', END)
@@ -537,6 +725,11 @@ export interface RunAnalysisGraphOutput {
   summary: string;
   extracted?: Record<string, unknown>;
   clarified?: { needsClarification: boolean; questions: string[] };
+  needsClarification?: boolean;
+  currentQuestion?: { id: string; question: string; options: string[] } | null;
+  questions?: { id: string; question: string; options: string[]; answer: string | null; retryCount: number; skipped: boolean; status: string }[];
+  clarifiedData?: Record<string, string>;
+  retryHint?: string;
   analysisResult?: string;
   riskResult?: string;
   queryResponse?: string;
@@ -551,6 +744,10 @@ export async function runAnalysisGraph(args: {
   retrievedContext: string;
   model: BaseChatModel;
   history?: { role: 'user' | 'assistant'; content: string }[];
+  preExtracted?: Record<string, unknown> | null;
+  clarifyPlan?: Record<string, unknown> | null;
+  clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
+  skipClarify?: boolean;
   onProgress?: (step: string, message: string) => void;
   onToken?: (content: string) => void;
 }): Promise<RunAnalysisGraphOutput> {
@@ -560,6 +757,10 @@ export async function runAnalysisGraph(args: {
     retrievedContext: args.retrievedContext,
     history: args.history || [],
     messages: [],
+    preExtracted: args.preExtracted || null,
+    clarifyPlan: args.clarifyPlan || null,
+    clarifyAnswer: args.clarifyAnswer || null,
+    skipClarify: args.skipClarify || false,
   });
 
   const intent = (result.intent as 'analyze' | 'query' | 'chat') || 'analyze';
@@ -583,6 +784,11 @@ export async function runAnalysisGraph(args: {
     summary: result.summary ?? '',
     extracted: intent === 'analyze' ? (result.extracted as Record<string, unknown>) ?? {} : undefined,
     clarified: intent === 'analyze' ? (result.clarified as { needsClarification: boolean; questions: string[] }) ?? { needsClarification: false, questions: [] } : undefined,
+    needsClarification: intent === 'analyze' ? (result.needsClarification as boolean) ?? false : undefined,
+    currentQuestion: intent === 'analyze' ? (result.currentQuestion as RunAnalysisGraphOutput['currentQuestion']) ?? null : undefined,
+    questions: intent === 'analyze' ? (result.questions as RunAnalysisGraphOutput['questions']) ?? [] : undefined,
+    clarifiedData: intent === 'analyze' ? (result.clarifiedData as Record<string, string>) ?? {} : undefined,
+    retryHint: intent === 'analyze' ? (result.retryHint as string) ?? '' : undefined,
     analysisResult: intent === 'analyze' ? (result.analysisResult as string) ?? '' : undefined,
     riskResult: intent === 'analyze' ? (result.riskResult as string) ?? '' : undefined,
     queryResponse: intent === 'query' ? (result.queryResponse as string) ?? '' : undefined,
