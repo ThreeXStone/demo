@@ -10,6 +10,7 @@ export interface UISelection {
   title: string;
   options: { label: string; value: string; description?: string }[];
   allowMultiple?: boolean;
+  selectedValue?: string;
 }
 
 export interface UIDynamicForm {
@@ -17,6 +18,7 @@ export interface UIDynamicForm {
   title: string;
   fields: UIFormField[];
   submitLabel?: string;
+  submittedFormData?: Record<string, string>;
 }
 
 export interface UIFormField {
@@ -67,6 +69,8 @@ export interface UIClarifyQuestion {
   questionId: string;
   question: string;
   options: string[];
+  answeredValue?: string;
+  disabled?: boolean;
 }
 
 export type UIComponent =

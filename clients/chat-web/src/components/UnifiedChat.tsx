@@ -52,7 +52,98 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
   useEffect(() => {
     if (!convId) { setMessages([]); return; }
     getMessages(convId).then((rows) => {
-      setMessages(rows.map((r) => ({ role: (r.role === 'human' || r.role === 'user') ? 'user' : 'ai', content: r.content })));
+      // 分离 system 消息和展示消息
+      const systemRows = rows.filter((r) => r.role === 'system');
+      const displayRows = rows.filter((r) => r.role !== 'system');
+
+      // 从 system 消息中提取 clarify_plan
+      let clarifyPlan: Record<string, unknown> | null = null;
+      let analyzeSessionId: string | null = null;
+      console.log(`[UI] history load | systemRows=${systemRows.length} | displayRows=${displayRows.length}`);
+      for (const sys of systemRows) {
+        const meta = sys.metadata as Record<string, unknown> | null;
+        if (meta?.type === 'clarify_plan') {
+          clarifyPlan = meta;
+          if (meta.analyzeSessionId) {
+            analyzeSessionId = meta.analyzeSessionId as string;
+          }
+          const qs = (meta.questions as Array<Record<string, unknown>>) || [];
+          console.log(`[UI] clarify_plan found | questionsCount=${qs.length} | currentIdx=${meta.currentQuestionIndex} | statuses=${qs.map((q: any) => `${q.id}:${q.status}`).join(',')}`);
+        }
+      }
+
+      // 构建 questions 查找表
+      const questionsMap = new Map<string, { status: string; answer: string | null; index: number }>();
+      let currentQuestionIdx = -1;
+      if (clarifyPlan) {
+        const questions = (clarifyPlan.questions as Array<Record<string, unknown>>) || [];
+        currentQuestionIdx = (clarifyPlan.currentQuestionIndex as number) ?? 0;
+        questions.forEach((q, i) => {
+          questionsMap.set(q.id as string, {
+            status: (q.status as string) || 'pending',
+            answer: (q.answer as string) || null,
+            index: i,
+          });
+        });
+      }
+
+      // 映射展示消息，还原 components
+      const msgs: ChatMsg[] = displayRows.map((r) => {
+        const role = (r.role === 'human' || r.role === 'user') ? 'user' as const : 'ai' as const;
+        const meta = r.metadata as Record<string, unknown> | null;
+        let components = (meta?.components || meta?.ui) as UIComponent[] | undefined;
+
+        // 根据 clarify_plan 标注 clarify_question 状态
+        if (components && clarifyPlan) {
+          components = components.map((comp): UIComponent => {
+            if (comp.type === 'clarify_question') {
+              const qState = questionsMap.get(comp.questionId);
+              console.log(`[UI] annotate clarify qId=${comp.questionId} | qState=${qState ? `status=${qState.status} answer=${qState.answer} idx=${qState.index} curIdx=${currentQuestionIdx}` : 'NOT_FOUND'}`);
+              if (qState) {
+                if (qState.status === 'answered' && qState.answer) {
+                  return { ...comp, answeredValue: qState.answer };
+                }
+                if (qState.status === 'pending' && qState.index !== currentQuestionIdx) {
+                  return { ...comp, disabled: true };
+                }
+              }
+            }
+            return comp;
+          });
+        }
+
+        return { role, content: r.content, components };
+      });
+
+      // 通过下一条消息的 actionPayload 反向标注 selection/form 状态
+      for (let i = 0; i < msgs.length - 1; i++) {
+        const msg = msgs[i];
+        const nextMeta = displayRows[i + 1]?.metadata as Record<string, unknown> | null;
+        const actionPayload = nextMeta?.actionPayload as Record<string, unknown> | null;
+        if (!msg.components || !actionPayload) continue;
+        msg.components = msg.components.map((c) => {
+          if (c.type === 'selection' && actionPayload.type === 'select') {
+            return { ...c, selectedValue: (actionPayload.selectedId || actionPayload.value) as string };
+          }
+          if (c.type === 'form' && (actionPayload.type === 'submit' || actionPayload.type === 'form_submit')) {
+            return { ...c, submittedFormData: actionPayload.formData as Record<string, string> };
+          }
+          return c;
+        });
+      }
+
+      // 恢复澄清模式状态
+      const lastAiMsg = [...msgs].reverse().find((m) => m.role === 'ai');
+      const activeClarifyQ = lastAiMsg?.components?.find(
+        (c) => c.type === 'clarify_question' && !(c as any).answeredValue && !(c as any).disabled,
+      ) as any;
+      if (activeClarifyQ) {
+        setIsInClarifyMode(true);
+        setCurrentClarifyQuestionId(activeClarifyQ.questionId);
+        if (analyzeSessionId) setCurrentAnalyzeSessionId(analyzeSessionId);
+      }
+
+      setMessages(msgs);
     }).catch(() => {});
   }, [convId]);
 
@@ -162,10 +253,29 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             source: 'text',
           },
         });
-        if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+        if (loadingRef.current) setMessages((prev) => {
+          const updated = [...prev];
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].role === 'ai' && updated[i].components) {
+              updated[i] = {
+                ...updated[i],
+                components: updated[i].components!.map((c) => {
+                  if (c.type === 'clarify_question' && c.questionId === currentClarifyQuestionId) {
+                    return { ...c, answeredValue: text };
+                  }
+                  return c;
+                }),
+              };
+              break;
+            }
+          }
+          return [...updated, aiMsg];
+        });
         if (cid) {
           saveMessage(cid, 'human', text).catch(() => {});
-          saveMessage(cid, 'ai', aiMsg.content).catch(() => {});
+          saveMessage(cid, 'ai', aiMsg.content,
+            aiMsg.components ? { components: aiMsg.components } : undefined
+          ).catch(() => {});
         }
         setIsInClarifyMode(false);
         setCurrentClarifyQuestionId(null);
@@ -193,7 +303,9 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
 
       if (cid) {
         saveMessage(cid, 'human', text).catch(() => {});
-        saveMessage(cid, 'ai', aiMsg.content).catch(() => {});
+        saveMessage(cid, 'ai', aiMsg.content,
+          aiMsg.components ? { components: aiMsg.components } : undefined
+        ).catch(() => {});
       }
     } catch (err: any) {
       if (err.name !== 'AbortError' && loadingRef.current) {
@@ -221,10 +333,29 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             source: action.source as string,
           },
         });
-        if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+        if (loadingRef.current) setMessages((prev) => {
+          const updated = [...prev];
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].role === 'ai' && updated[i].components) {
+              updated[i] = {
+                ...updated[i],
+                components: updated[i].components!.map((c) => {
+                  if (c.type === 'clarify_question' && c.questionId === action.questionId) {
+                    return { ...c, answeredValue: action.answer as string };
+                  }
+                  return c;
+                }),
+              };
+              break;
+            }
+          }
+          return [...updated, aiMsg];
+        });
         if (convId) {
           saveMessage(convId, 'human', action.answer as string).catch(() => {});
-          saveMessage(convId, 'ai', aiMsg.content).catch(() => {});
+          saveMessage(convId, 'ai', aiMsg.content,
+            aiMsg.components ? { components: aiMsg.components } : undefined
+          ).catch(() => {});
         }
         setIsInClarifyMode(false);
         setCurrentClarifyQuestionId(null);
@@ -242,7 +373,36 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
     loadingRef.current = true;
     try {
       const resp = await uiAction(sessionId, { componentType: comp.type, payload: action });
-      setMessages((prev) => [...prev, { role: 'ai', content: resp.message, components: resp.components }]);
+      // 标注上一条消息的组件状态，同时追加响应消息
+      setMessages((prev) => {
+        const updated = [...prev];
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].role === 'ai' && updated[i].components) {
+            updated[i] = {
+              ...updated[i],
+              components: updated[i].components!.map((c) => {
+                if (c.type === 'selection' && action.type === 'select') {
+                  return { ...c, selectedValue: (action.selectedId || action.value) as string };
+                }
+                if (c.type === 'form' && (action.type === 'submit' || action.type === 'form_submit')) {
+                  return { ...c, submittedFormData: action.formData as Record<string, string> };
+                }
+                return c;
+              }),
+            };
+            break;
+          }
+        }
+        return [...updated, { role: 'ai', content: resp.message, components: resp.components }];
+      });
+
+      // 持久化响应消息（含 actionPayload 供刷新时恢复组件状态）
+      if (convId) {
+        saveMessage(convId, 'ai', resp.message, {
+          components: resp.components,
+          actionPayload: action,
+        }).catch(() => {});
+      }
 
       // 确认提交后触发 LangGraph 深度分析
       const isConfirm = action.type === 'confirm' && action.confirmed === true;
@@ -258,7 +418,9 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             analyzeSessionId: sid,
           });
           if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
-          if (convId) saveMessage(convId, 'ai', aiMsg.content).catch(() => {});
+          if (convId) saveMessage(convId, 'ai', aiMsg.content,
+            aiMsg.components ? { components: aiMsg.components } : undefined
+          ).catch(() => {});
         } catch {
           if (loadingRef.current) setMessages((prev) => [...prev, { role: 'ai', content: '深度分析请求失败' }]);
         } finally {

@@ -53,10 +53,15 @@ export async function createConversation(title?: string): Promise<Conversation> 
 export async function getMessages(conversationId: string): Promise<Message[]> {
   return request(`/chat/conversations/${conversationId}/messages`);
 }
-export async function saveMessage(conversationId: string, role: string, content: string): Promise<Message> {
+export async function saveMessage(
+  conversationId: string,
+  role: string,
+  content: string,
+  metadata?: Record<string, unknown>,
+): Promise<Message> {
   return request(`/chat/conversations/${conversationId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ role, content }),
+    body: JSON.stringify({ role, content, ...(metadata ? { metadata } : {}) }),
   });
 }
 export async function deleteConversation(conversationId: string): Promise<void> {
