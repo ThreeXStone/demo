@@ -44,10 +44,15 @@ export class ConversationController {
   @Post(':id/messages')
   async addMessage(
     @Param('id') conversationId: string,
-    @Body() body: { role: string; content: string },
+    @Body() body: { role: string; content: string; metadata?: Record<string, unknown> },
   ) {
     return this.prisma.message.create({
-      data: { conversationId, role: body.role, content: body.content.slice(0, 10000) },
+      data: {
+        conversationId,
+        role: body.role,
+        content: body.content.slice(0, 10000),
+        ...(body.metadata ? { metadata: body.metadata as any } : {}),
+      },
     });
   }
 

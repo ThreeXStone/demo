@@ -401,7 +401,7 @@ const createNodes = (
   ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
     // 澄清模式：跳过 LLM 分类，直接进入 analyze 管线
     if (state.clarifyAnswer) {
-      console.log('[LangGraph] classify → analyze (clarify mode, skip LLM)');
+      console.log('[UIChat] classify → analyze (clarify mode, skip LLM)');
       onProgress?.('classifier', '意图识别完成');
       return { intent: 'analyze' };
     }
@@ -420,11 +420,11 @@ const createNodes = (
           : '';
       const parsed = parseJson(text, { intent: 'chat', reasoning: '' });
       const validated = intentSchema.parse(parsed);
-      console.log(`[LangGraph] classify → ${validated.intent} | ${validated.reasoning}`);
+      console.log(`[UIChat] classify → ${validated.intent} | ${validated.reasoning}`);
       onProgress?.('classifier', '意图识别完成');
       return { intent: validated.intent };
     } catch (e) {
-      console.log(`[LangGraph] classify failed: ${(e as Error).message}, defaulting to chat`);
+      console.log(`[UIChat] classify failed: ${(e as Error).message}, defaulting to chat`);
       onProgress?.('classifier', '意图识别完成');
       return { intent: 'chat' };
     }
@@ -795,4 +795,173 @@ export async function runAnalysisGraph(args: {
     chatResponse: intent === 'chat' ? (result.chatResponse as string) ?? '' : undefined,
     steps,
   };
+}
+
+// --- Stream Types ---
+
+/** 图流式事件类型 */
+export type GraphStreamEvent =
+  | { type: 'node_start'; node: string }
+  | { type: 'token'; content: string; node: string }
+  | { type: 'node_end'; node: string; output?: unknown }
+  | { type: 'log'; level: 'info' | 'debug' | 'error'; message: string; data?: Record<string, unknown> }
+  | { type: 'complete'; result: RunAnalysisGraphOutput };
+
+// --- Stream Runner ---
+
+/** 内部节点名（在 streamEvents 中过滤掉） */
+const INTERNAL_NODES = [
+  'RunnableSequence', 'StateGraph', 'LangGraph',
+  'RunnableLambda', '__start__', '__end__',
+  'agent', 'tools', 'finalize', // ReAct 子图内部
+];
+
+/** 不流式输出 token 的节点（JSON 输出 + invoke-only + 子图内部） */
+const SKIP_TOKEN_NODES = ['classifier', 'extractStep', 'clarifyStep', 'analysisStep', 'riskStep'];
+
+/**
+ * 流式运行需求分析图。
+ * 使用 LangGraph streamEvents API 实现 token 级流式输出。
+ */
+export async function* streamAnalysisGraph(args: {
+  input: string;
+  retrievedContext: string;
+  model: BaseChatModel;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+  preExtracted?: Record<string, unknown> | null;
+  clarifyPlan?: Record<string, unknown> | null;
+  clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
+  skipClarify?: boolean;
+}): AsyncGenerator<GraphStreamEvent> {
+  const { input, retrievedContext, model } = args;
+
+  yield {
+    type: 'log',
+    level: 'info',
+    message: 'streamAnalysisGraph 开始',
+    data: { input: input.substring(0, 100) },
+  };
+
+  // 创建图（不传 callbacks，由 streamEvents 捕获原始事件）
+  const graph = createAnalysisGraph(model);
+
+  const visitedNodes = new Set<string>();
+  let currentNode: string | null = null;
+  // 累积各节点的 partial state 输出，避免依赖 streamEvents 的 top-level finalState
+  const accumulated: Record<string, unknown> = {};
+
+  try {
+    const eventStream = graph.streamEvents(
+      {
+        input,
+        retrievedContext,
+        history: args.history || [],
+        messages: [],
+        preExtracted: args.preExtracted || null,
+        clarifyPlan: args.clarifyPlan || null,
+        clarifyAnswer: args.clarifyAnswer || null,
+        skipClarify: args.skipClarify || false,
+      },
+      { version: 'v2' },
+    );
+
+    for await (const event of eventStream) {
+      // 节点开始
+      if (event.event === 'on_chain_start') {
+        const name = event.name;
+        if (name && !INTERNAL_NODES.some((n) => name.includes(n)) && !visitedNodes.has(name)) {
+          visitedNodes.add(name);
+          currentNode = name;
+          yield { type: 'node_start', node: name };
+        }
+      }
+
+      // LLM token 流
+      if (event.event === 'on_chat_model_stream') {
+        const chunk = event.data?.chunk;
+        const content = typeof chunk?.content === 'string'
+          ? chunk.content
+          : Array.isArray(chunk?.content)
+            ? chunk.content.map((c: any) => c.text || '').join('')
+            : '';
+        if (content && currentNode && !SKIP_TOKEN_NODES.includes(currentNode)) {
+          yield { type: 'token', content, node: currentNode };
+        }
+      }
+
+      // 节点完成 → 累积 partial state
+      if (event.event === 'on_chain_end') {
+        const name = event.name;
+        if (name && visitedNodes.has(name)) {
+          const output = event.data?.output;
+          yield { type: 'node_end', node: name, output };
+          // 合并节点输出到累积状态
+          if (output && typeof output === 'object' && !Array.isArray(output)) {
+            Object.assign(accumulated, output);
+          }
+        }
+      }
+    }
+
+    // 从累积状态构建结果（不再 fallback invoke）
+    const result = accumulated as unknown as typeof RequirementAnalysisState.State;
+    const intent = (result.intent as 'analyze' | 'query' | 'chat') || 'analyze';
+
+    yield {
+      type: 'log',
+      level: 'info',
+      message: 'graph 执行完成',
+      data: { intent, hasSummary: !!result.summary },
+    };
+
+    // 构建步骤
+    const steps: Record<string, string> = { classifier: intent };
+    if (intent === 'analyze') {
+      steps.extract = JSON.stringify(result.extracted ?? {});
+      steps.clarify = JSON.stringify(result.clarified ?? {});
+      if (!result.needsClarification) {
+        steps.analysis = result.analysisResult ?? '';
+        steps.risk = result.riskResult ?? '';
+        steps.summary = result.summary ?? '';
+      }
+    } else if (intent === 'query') {
+      steps.query = result.queryResponse ?? '';
+    } else {
+      steps.chat = result.chatResponse ?? '';
+    }
+
+    const finalResult: RunAnalysisGraphOutput = {
+      intent,
+      summary: result.summary ?? '',
+      extracted: intent === 'analyze' ? (result.extracted as Record<string, unknown>) ?? {} : undefined,
+      clarified: intent === 'analyze' ? (result.clarified as { needsClarification: boolean; questions: string[] }) ?? { needsClarification: false, questions: [] } : undefined,
+      needsClarification: intent === 'analyze' ? (result.needsClarification as boolean) ?? false : undefined,
+      currentQuestion: intent === 'analyze' ? (result.currentQuestion as RunAnalysisGraphOutput['currentQuestion']) ?? null : undefined,
+      questions: intent === 'analyze' ? (result.questions as RunAnalysisGraphOutput['questions']) ?? [] : undefined,
+      clarifiedData: intent === 'analyze' ? (result.clarifiedData as Record<string, string>) ?? {} : undefined,
+      retryHint: intent === 'analyze' ? (result.retryHint as string) ?? '' : undefined,
+      analysisResult: intent === 'analyze' ? (result.analysisResult as string) ?? '' : undefined,
+      riskResult: intent === 'analyze' ? (result.riskResult as string) ?? '' : undefined,
+      queryResponse: intent === 'query' ? (result.queryResponse as string) ?? '' : undefined,
+      chatResponse: intent === 'chat' ? (result.chatResponse as string) ?? '' : undefined,
+      steps,
+    };
+
+    yield { type: 'complete', result: finalResult };
+
+    yield {
+      type: 'log',
+      level: 'info',
+      message: 'streamAnalysisGraph 完成',
+      data: { intent, summaryLength: finalResult.summary.length },
+    };
+  } catch (err) {
+    yield {
+      type: 'log',
+      level: 'error',
+      message: 'streamAnalysisGraph 执行失败',
+      data: { error: err instanceof Error ? err.message : String(err) },
+    };
+    throw err;
+  }
 }
