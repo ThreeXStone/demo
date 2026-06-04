@@ -242,3 +242,18 @@ cd clients/chat-web && bunx tsc --noEmit
 - ❌ 错误做法：创建 worktree 后直接启动服务，发现 API key 报错、数据库连不上
   ✅ 正确做法：创建 worktree 后检查 `.env` 等 gitignore 文件是否存在，缺失则 `cp` 从主仓库复制
   📌 原因：`git worktree add` 只检出 tracked 文件，`.gitignore` 中的文件（`.env`、`node_modules` 等）不会被复制到 worktree
+
+<!-- LangChain 模板花括号转义 (2026-06-04) -->
+- ❌ 错误做法：在 `ChatPromptTemplate` 的 prompt 里直接写 JSON 示例（含 `{` `}`），运行时抛 "Single '}' in template"
+  ✅ 正确做法：JSON 示例中的 `{` 写成 `{{`，`}` 写成 `}}`
+  📌 原因：LangChain 的 `ChatPromptTemplate` 使用类似 Python str.format 的模板语法，`{var}` 被当做变量引用。字面量的花括号必须双写转义
+
+<!-- LangGraph clarify 模式下 classifier 路由 (2026-06-04) -->
+- ❌ 错误做法：用户提交澄清回答时，短输入（如「嗯」「好的」）被 classifier 分类为 chat，跳过了 clarify 流程
+  ✅ 正确做法：在 `classifierNode` 开头检测 `state.clarifyAnswer`，存在时直接返回 `intent: 'analyze'`，跳过 LLM 分类
+  📌 原因：澄清模式下用户回答是给 clarifyStep 处理的，不应被独立分类。短输入没有足够语义信号，classifier 会误判为闲聊
+
+<!-- SSE markdown 兜底 (2026-06-04) -->
+- ❌ 错误做法：只依赖 SSE markdown 消息设置 `content`，无兜底导致前端显示「空响应」
+  ✅ 正确做法：在 `handleSSE` 返回前检查：若 `content` 为空但 `components` 中有 `clarify_question`，直接用 question 文本填充 content
+  📌 原因：SSE 流式数据在 TCP 层面可能合并/切割，或 `: ping` 心跳行插入，导致 markdown 消息的 JSON 解析偶发丢失。UI 组件中的数据可作为兜底
