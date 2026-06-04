@@ -488,7 +488,7 @@ function routeByIntent(state: typeof RequirementAnalysisState.State): string {
     chat: 'chatHandler',
   };
   const route = routeMap[state.intent] || 'chatHandler';
-  console.log(`[LangGraph] route: intent=${state.intent} → ${route}`);
+  console.log(`[UIChat] route: intent=${state.intent} → ${route}`);
   return route;
 }
 

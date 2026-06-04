@@ -80,6 +80,7 @@ export class UIChatController {
       const model = getModel(this.config, body.model);
       const history = await this.getHistory(body.conversationId);
       console.log(`[UIChat] chat request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
+      console.log('[UIChat] route: intent=chat → chatHandler');
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
 
       const stream = await model.stream([
@@ -131,6 +132,7 @@ export class UIChatController {
       const model = getModel(this.config, body.model);
       const history = await this.getHistory(body.conversationId);
       console.log(`[UIChat] query request | session=${body.sessionId} | model=${(model as any).model || 'unknown'} | input="${body.input.slice(0, 80)}"`);
+      console.log('[UIChat] route: intent=query → queryHandler');
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
 
       const stream = await model.stream([
