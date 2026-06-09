@@ -1,7 +1,6 @@
 import { Annotation, MessagesAnnotation, StateGraph, START, END } from '@langchain/langgraph';
-import { ToolNode } from '@langchain/langgraph/prebuilt';
+import { MemorySaver } from '@langchain/langgraph';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { tool } from '@langchain/core/tools';
 import { BaseMessage, SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 import {
@@ -10,6 +9,7 @@ import {
   createRiskAgent,
   createSummaryAgent,
 } from '../agents/sub-agents';
+import { createAnalysisSupervisorSubGraph } from './experts';
 
 // --- State Definition ---
 
@@ -21,9 +21,13 @@ export const RequirementAnalysisState = Annotation.Root({
     default: () => [],
     reducer: (_, next) => next,
   }),
-  // classifier
-  intent: Annotation<'analyze' | 'query' | 'chat'>({
+  // triage
+  intent: Annotation<'analyze' | 'chat' | 'risk_only'>({
     default: () => 'chat',
+    reducer: (_, next) => next,
+  }),
+  handoffReason: Annotation<string>({
+    default: () => '',
     reducer: (_, next) => next,
   }),
   // analysis pipeline
@@ -47,15 +51,45 @@ export const RequirementAnalysisState = Annotation.Root({
     default: () => 0,
     reducer: (_, next) => next,
   }),
+  // Expert analysis outputs (Supervisor + 多专家)
+  functionalAnalysis: Annotation<string>({
+    default: () => '',
+    reducer: (a, b) => b || a,  // non-empty wins; safe for parallel fan-in
+  }),
+  performanceAnalysis: Annotation<string>({
+    default: () => '',
+    reducer: (a, b) => b || a,
+  }),
+  securityAnalysis: Annotation<string>({
+    default: () => '',
+    reducer: (a, b) => b || a,
+  }),
+  complianceAnalysis: Annotation<string>({
+    default: () => '',
+    reducer: (a, b) => b || a,
+  }),
+  activeExperts: Annotation<string[]>({
+    default: () => ['functional'],
+    reducer: (_, next) => next,
+  }),
   summary: Annotation<string>({
     default: () => '',
     reducer: (_, next) => next,
   }),
-  // fast-path responses
-  queryResponse: Annotation<string>({
+  // Critic-Refine 子图字段
+  critique: Annotation<string>({
     default: () => '',
     reducer: (_, next) => next,
   }),
+  reviseCount: Annotation<number>({
+    default: () => 0,
+    reducer: (_, next) => next,
+  }),
+  summaryHistory: Annotation<string[]>({
+    default: () => [],
+    reducer: (old, next) => [...old, ...next],
+  }),
+  // fast-path response
   chatResponse: Annotation<string>({
     default: () => '',
     reducer: (_, next) => next,
@@ -99,52 +133,13 @@ export const RequirementAnalysisState = Annotation.Root({
   }),
 });
 
-// --- Classifier Zod Schema ---
+// --- Triage Zod Schema (Handoff 模式) ---
 
-const intentSchema = z.object({
-  intent: z.enum(['analyze', 'query', 'chat']).describe('用户意图分类'),
-  reasoning: z.string().describe('分类理由，一句话说明'),
+const triageSchema = z.object({
+  action: z.enum(['answer', 'handoff_to_analysis', 'handoff_to_risk']),
+  response: z.string().optional().default('').describe('当 action=answer 时直接回复用户的内容'),
+  reason: z.string().optional().default('').describe('交接理由'),
 });
-
-const CLASSIFIER_PROMPT = `你是意图分类器。分析用户输入，判断意图类型。
-
-## 意图类型
-
-### analyze — 需求分析
-用户想要分析、评估、分解一个需求或功能。
-关键特征：包含功能描述、需求细节、实现方案讨论
-示例：
-- "分析需求：开发在线问卷系统"
-- "评估这个功能的可行性"
-- "需要一个用户登录功能"
-
-### query — 信息查询
-用户想要查询、查看、了解已有需求的信息，而非分析新需求。
-关键特征：包含"查询""查看""了解""之前""历史""状态""进度""结果"等查询词，或包含需求编号（如 REQ-xxx）
-示例：
-- "查询 REQ-20240315-001 的状态"
-- "REQ-20240315-001 的进度如何"
-- "查看之前的需求"
-- "我想要查询一下之前的需求"
-- "看看历史上的需求有哪些"
-
-### chat — 普通闲聊
-用户进行非业务相关的对话。
-关键特征：打招呼、天气、无关话题、简单问候
-示例：
-- "你好"
-- "今天天气不错"
-- "谢谢你的帮助"
-
-## 优先级规则
-1. 包含"查询""查看""了解""之前""历史""状态""进度"等查询词 → query（即使句子中有"需求"二字）
-2. 以"分析"/"评估"/"评审"开头 + 包含功能描述 → analyze
-3. 包含需求编号（REQ-\\d+）且无分析性描述 → query
-4. 明确闲聊/问候 → chat
-5. 包含功能描述/实现方案/开发讨论 → analyze
-6. 默认 → chat
-
-只输出 JSON：{"intent":"analyze|query|chat","reasoning":"分类理由"}`;
 
 // --- JSON Parser ---
 
@@ -158,570 +153,500 @@ const parseJson = <T>(raw: unknown, fallback: T): T => {
   }
 };
 
-// --- Mock Tools ---
+// --- Mock Tools (moved to ./expert-tools.ts) ---
 
-const searchRequirementTool = tool(
-  (input) => {
-    const { reqId } = input as { reqId: string };
-    console.log(`[LangGraph] searchRequirement called with reqId: ${reqId}`);
-    return JSON.stringify({
-      reqId,
-      title: '示例需求：用户认证模块',
-      type: 'functional',
-      priority: 'P1',
-      description: '实现基于JWT的用户登录、注册、密码重置功能',
-      acceptanceCriteria: '用户可通过邮箱注册并登录；密码至少8位含大小写字母和数字；支持密码重置',
-      status: 'reviewing',
-      dependencies: ['邮件服务', '短信网关'],
-    });
-  },
-  {
-    name: 'search_requirement',
-    description: '根据需求编号查询需求详情。输入 reqId（如 REQ-001），返回需求的完整信息。',
-    schema: z.object({
-      reqId: z.string().describe('需求编号，如 REQ-001'),
-    }),
-  },
-);
+// --- Summary SubGraph (Critic-Refine) ---
 
-const analysisTools = [searchRequirementTool];
-
-// --- Analysis SubGraph (ReAct) ---
-
-const ANALYSIS_SYSTEM_PROMPT = `你是资深需求分析专家。根据用户输入和已抽取的需求信息，生成深度分析报告。
-
-## 可用工具
-- **search_requirement**：查询已有需求的详细信息。当用户输入或上下文中包含需求编号（如 REQ-XXX）时，应调用此工具获取详情后再分析。
-
-## 分析要求
-输出完整的 Markdown 分析报告，必须包含：
-1. **功能分解**：将需求拆解为可执行的子功能
-2. **用户故事**：为每个子功能编写 Given-When-Then 格式的用户故事
-3. **验收标准**：可量化的验收条件
-4. **技术复杂度评估**：从低/中/高评估，并说明理由
-
-## 工具调用规则
-- 只有当输入中包含明确的需求编号时才调用 search_requirement
-- 获取足够信息后直接输出分析结论，不要重复调用同一工具
-- 对相同参数禁止重复调用工具`;
-
-function createAnalysisSubGraph(model: BaseChatModel) {
-  if (!model.bindTools) throw new Error('当前模型不支持工具调用');
-  const modelWithTools = model.bindTools(analysisTools);
-
-  const subgraphState = Annotation.Root({
-    messages: Annotation<BaseMessage[]>({
-      default: () => [],
-      reducer: (a, b) => a.concat(b),
-    }),
-    extracted: Annotation<Record<string, unknown>>({
-      default: () => ({}),
-      reducer: (_, next) => next,
-    }),
-    toolLoopCount: Annotation<number>({
-      default: () => 0,
-      reducer: (_, next) => next,
-    }),
-    analysisResult: Annotation<string>({
-      default: () => '',
-      reducer: (_, next) => next,
-    }),
-  });
-
-  const MAX_TOOL_LOOPS = 6;
-
-  const logTS = () => new Date().toISOString();
-
-  const agentNode = async (state: typeof subgraphState.State) => {
-    const loop = state.toolLoopCount + 1;
-    console.log(`[LangGraph] ${logTS()} | ReAct AGENT_START  | round ${loop}/${MAX_TOOL_LOOPS} | msgs=${state.messages.length}`);
+function createSummarySubGraph(model: BaseChatModel) {
+  async function actorNode(
+    state: typeof RequirementAnalysisState.State,
+  ): Promise<Partial<typeof RequirementAnalysisState.State>> {
     const t0 = Date.now();
+    const agent = createSummaryAgent(model);
+    const result = await agent.invoke({
+      input: state.input,
+      extractResult: JSON.stringify(state.extracted),
+      analysisResult: state.analysisResult,
+      riskResult: state.riskResult,
+    });
+    const summary = typeof result.content === 'string' ? result.content : '';
+    console.log(`[计时] summaryStep actorNode 完成 (${summary.length} chars)，耗时 ${Date.now() - t0}ms`);
+    return { summary };
+  }
 
-    const messages = state.messages.length === 0
-      ? [
-          new SystemMessage(ANALYSIS_SYSTEM_PROMPT),
-          new HumanMessage(`用户输入：\n需求抽取结果：${JSON.stringify(state.extracted)}`),
-        ]
-      : state.messages;
+  async function criticNode(
+    state: typeof RequirementAnalysisState.State,
+  ): Promise<Partial<typeof RequirementAnalysisState.State>> {
+    const response = await model.invoke([
+      { role: 'system', content: `你是需求评审专家。按以下标准检查综合报告：
 
-    const response = await modelWithTools.invoke(messages);
-    const elapsed = Date.now() - t0;
-    const tcCount = (response as any).tool_calls?.length || 0;
-    console.log(`[LangGraph] ${logTS()} | ReAct AGENT_DONE   | round ${loop} | ${elapsed}ms | tool_calls=${tcCount} | contentLen=${typeof response.content === 'string' ? response.content.length : 0}`);
-    return { messages: [response], toolLoopCount: loop };
-  };
+**评审标准**（必须全部满足）：
+1. 章节完整性：必须包含需求概述、可行性结论、风险摘要、下一步建议等核心章节
+2. 内容长度：报告总长度与需求复杂度匹配，简单需求不少于 300 字，复杂需求不少于 500 字
+3. 风险处理：风险章节必须给出缓解建议，不能只列风险
+4. 下一步建议：建议必须具体可执行，不能空洞（如"继续推进"不合格）
+5. 逻辑一致性：各章节之间不能有明显矛盾
 
-  const toolsNode = new ToolNode(analysisTools);
+**输出纯 JSON 对象**（不要包含 markdown 代码块）：
+{"pass": true, "critique": ""}
 
-  const finalizeNode = (state: typeof subgraphState.State) => {
-    const lastAi = [...state.messages].reverse().find((m) => m._getType() === 'ai');
-    const content = typeof lastAi?.content === 'string' ? lastAi.content : '';
-    console.log(`[LangGraph] ${logTS()} | ReAct FINALIZE     | loops=${state.toolLoopCount} | resultLen=${content.length}`);
-    return { analysisResult: content || '分析服务暂不可用，请稍后重试。' };
-  };
+如果全部满足 → pass=true, critique=""
+如果任一不满足 → pass=false，给出最关键的 1-2 条具体修改意见
+避免主观性评价，只检查核心要素，防止无限循环` },
+      { role: 'user', content: `待评审报告：\n\n${state.summary}\n\n请按标准评审。` },
+    ]);
 
-  const routeAfterAgent = (state: typeof subgraphState.State): string => {
-    const lastMsg = state.messages[state.messages.length - 1];
-    if (state.toolLoopCount >= MAX_TOOL_LOOPS) {
-      console.log(`[LangGraph] ${logTS()} | ReAct ROUTE        | max loops (${state.toolLoopCount}) → finalize`);
-      return 'finalize';
+    const cleanJson = (response.content as string).trim();
+    const jsonStart = Math.min(
+      cleanJson.indexOf('{') !== -1 ? cleanJson.indexOf('{') : Infinity,
+      cleanJson.indexOf('[') !== -1 ? cleanJson.indexOf('[') : Infinity,
+    );
+    const jsonStr = jsonStart > 0 ? cleanJson.substring(jsonStart) : cleanJson;
+
+    let result: { pass: boolean; critique: string };
+    try {
+      result = JSON.parse(jsonStr);
+    } catch {
+      result = { pass: true, critique: '' };
     }
-    const isAi = lastMsg._getType() === 'ai';
-    const hasToolCalls = isAi && 'tool_calls' in lastMsg && (lastMsg as any).tool_calls?.length > 0;
-    if (hasToolCalls) {
-      const tcNames = (lastMsg as any).tool_calls.map((tc: any) => tc.name).join(', ');
-      console.log(`[LangGraph] ${logTS()} | ReAct ROUTE        | tool_calls: [${tcNames}] → tools`);
-      return 'tools';
-    }
-    console.log(`[LangGraph] ${logTS()} | ReAct ROUTE        | no tool calls → finalize`);
-    return 'finalize';
-  };
 
-  return new StateGraph(subgraphState)
-    .addNode('agent', agentNode)
-    .addNode('tools', toolsNode)
-    .addNode('finalize', finalizeNode)
-    .addEdge(START, 'agent')
-    .addConditionalEdges('agent', routeAfterAgent, { tools: 'tools', finalize: 'finalize' })
-    .addEdge('tools', 'agent')
-    .addEdge('finalize', END)
+    console.log(`[Critic子图] criticNode: pass=${result.pass}, critique=${result.critique}`);
+    return { critique: result.pass ? '' : result.critique };
+  }
+
+  async function refineNode(
+    state: typeof RequirementAnalysisState.State,
+  ): Promise<Partial<typeof RequirementAnalysisState.State>> {
+    const response = await model.invoke([
+      { role: 'system', content: `你是需求分析师。根据评审意见修订报告。
+
+**修订原则**：
+1. 只修改被指出的问题部分
+2. 未被批评的章节保持不变
+3. 补充缺失的章节或内容
+4. 修正逻辑矛盾
+
+**输出要求**：输出完整的修订后报告（包含所有章节），不要只输出修改部分。
+
+**禁止行为**：不要重新生成整个报告、不要删除正确的内容` },
+      { role: 'user', content: `原报告：\n${state.summary}\n\n评审意见：\n${state.critique}\n\n请根据评审意见修订报告，只改有问题的地方。` },
+    ]);
+
+    const count = state.reviseCount + 1;
+    console.log(`[Critic子图] refineNode: reviseCount=${count}`);
+    return {
+      summary: typeof response.content === 'string' ? response.content : '',
+      reviseCount: count,
+    };
+  }
+
+  function shouldRefine(state: typeof RequirementAnalysisState.State): string {
+    if (state.reviseCount >= 2) {
+      console.log('[Critic子图] 达到修订上限，强制终止');
+      return 'streamFinal';
+    }
+    if (!state.critique || state.critique.trim() === '') {
+      console.log('[Critic子图] 通过评审，完成');
+      return 'streamFinal';
+    }
+    console.log('[Critic子图] 未通过评审，进入 refine');
+    return 'refine';
+  }
+
+  // 不再调用 LLM，直接逐字推送 state.summary
+  async function streamFinalNode(
+    state: typeof RequirementAnalysisState.State,
+    config: { configurable?: { tokenWriter?: (chunk: string) => void } },
+  ): Promise<Partial<typeof RequirementAnalysisState.State>> {
+    const writer = config?.configurable?.tokenWriter;
+    const content = state.summary;
+    if (writer && content) {
+      console.log(`[Critic子图] streamFinal: 推送 ${content.length} chars`);
+      // 按词分割（保留空格），词的自然长度控制推送节奏
+      const words = content.split(/(\s+)/);
+      for (const word of words) {
+        writer(word);
+      }
+    } else {
+      console.log('[Critic子图] streamFinal: 无 writer，跳过推送');
+    }
+    return {};
+  }
+
+  return new StateGraph(RequirementAnalysisState)
+    .addNode('actor', actorNode)
+    .addNode('critic', criticNode)
+    .addNode('refine', refineNode)
+    .addNode('streamFinal', streamFinalNode)
+    .addEdge(START, 'actor')
+    .addEdge('actor', 'critic')
+    .addConditionalEdges('critic', shouldRefine, {
+      streamFinal: 'streamFinal',
+      refine: 'refine',
+    })
+    .addEdge('refine', 'critic')
+    .addEdge('streamFinal', END)
     .compile();
 }
 
+// --- Analysis SubGraph (ReAct) ---
+// 原有的 createAnalysisSubGraph 已被 Supervisor + 多专家架构替代，
+// 详见 ./experts.ts 中的 createAnalysisSupervisorSubGraph。
 
 // --- Node Factory ---
 
 
-const createNodes = (
-  model: BaseChatModel,
-  onProgress?: (step: string, message: string) => void,
-  onToken?: (content: string) => void,
-) => {
+// --- Helpers ---
 
-  // Safe extraction: stream chunks may have content as string or array
-  const extractText = (chunk: any): string => {
-    if (typeof chunk.content === 'string') return chunk.content;
-    if (Array.isArray(chunk.content)) return chunk.content.map((c: any) => c.text || '').join('');
-    return '';
+const extractText = (chunk: any): string => {
+  if (typeof chunk.content === 'string') return chunk.content;
+  if (Array.isArray(chunk.content)) return chunk.content.map((c: any) => c.text || '').join('');
+  return '';
+};
+
+const LLM_TIMEOUT = 100_000;
+const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
+  let timer: any;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      console.log(`[LangGraph] TIMEOUT after ${LLM_TIMEOUT}ms: ${label}`);
+      reject(new Error(`操作超时: ${label}`));
+    }, LLM_TIMEOUT);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
+
+// --- clarify helpers ---
+
+interface QuestionItem {
+  id: string;
+  question: string;
+  options: string[];
+  multiSelect?: boolean;
+  answer: string | null;
+  retryCount: number;
+  skipped: boolean;
+  status: string;
+}
+
+function isValidAnswer(text: string): boolean {
+  return text.trim().length >= 2;
+}
+
+function buildClarifyDone(questions: QuestionItem[]) {
+  const data: Record<string, string> = {};
+  for (const q of questions) {
+    if (q.status === 'answered' && q.answer) data[q.id] = q.answer;
+  }
+  return { needsClarification: false, clarifiedData: data, questions };
+}
+
+function buildClarifyReturn(plan: Record<string, unknown>, nextQ: QuestionItem) {
+  return {
+    needsClarification: true,
+    currentQuestion: nextQ,
+    questions: plan.questions as QuestionItem[],
+    clarifyPlan: plan,
   };
+}
 
-  // Timeout wrapper: reject if LLM call exceeds limit
-  const LLM_TIMEOUT = 100_000;
-  const withTimeout = <T>(promise: Promise<T>, label: string): Promise<T> => {
-    let timer: any;
-    const timeout = new Promise<T>((_, reject) => {
-      timer = setTimeout(() => {
-        console.log(`[LangGraph] TIMEOUT after ${LLM_TIMEOUT}ms: ${label}`);
-        reject(new Error(`操作超时: ${label}`));
-      }, LLM_TIMEOUT);
-    });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-  };
+function handleClarifyAnswer(
+  plan: Record<string, unknown>,
+  answer: { questionId: string; answer: string; source: string },
+) {
+  const questions = plan.questions as QuestionItem[];
+  const idx = (plan.currentQuestionIndex as number) || 0;
+  const q = questions[idx];
 
+  if (!q) return buildClarifyDone(questions);
 
-  // --- clarify helpers ---
+  const valid = answer.source === 'chip' || answer.source === 'multi-select' || answer.source === 'text' || isValidAnswer(answer.answer);
 
-  interface QuestionItem {
-    id: string;
-    question: string;
-    options: string[];
-    answer: string | null;
-    retryCount: number;
-    skipped: boolean;
-    status: string;
+  if (valid) {
+    q.answer = answer.answer;
+    q.status = 'answered';
+    const nextIdx = questions.findIndex((_q, i) => i > idx && _q.status === 'pending');
+    if (nextIdx === -1) return buildClarifyDone(questions);
+    plan.currentQuestionIndex = nextIdx;
+    return buildClarifyReturn(plan, questions[nextIdx]);
   }
 
-  function isValidAnswer(text: string): boolean {
-    return text.trim().length >= 2;
+  q.retryCount++;
+  if (q.retryCount >= 2) {
+    q.skipped = true;
+    q.status = 'skipped';
+    const nextIdx = questions.findIndex((_q, i) => i > idx && _q.status === 'pending');
+    if (nextIdx === -1) return buildClarifyDone(questions);
+    plan.currentQuestionIndex = nextIdx;
+    return buildClarifyReturn(plan, questions[nextIdx]);
   }
+  return {
+    needsClarification: true,
+    currentQuestion: q,
+    questions,
+    clarifyPlan: plan,
+    retryHint: '请提供更详细的回答',
+  };
+}
 
-  function buildClarifyDone(questions: QuestionItem[]) {
-    const data: Record<string, string> = {};
-    for (const q of questions) {
-      if (q.status === 'answered' && q.answer) data[q.id] = q.answer;
+// ====== Standalone Nodes (autix-demo 模式) ======
+
+async function triageNodeFn(
+  state: typeof RequirementAnalysisState.State,
+  config: { model: BaseChatModel },
+): Promise<Partial<typeof RequirementAnalysisState.State>> {
+  const { model } = config;
+  if (state.clarifyAnswer) {
+    console.log('[UIChat] triage → analyze (clarify mode, skip triage)');
+    return { intent: 'analyze', handoffReason: '' };
+  }
+  try {
+    const structured = model.withStructuredOutput(triageSchema, { method: 'jsonMode' });
+    const result = await withTimeout(
+      structured.invoke([
+        new SystemMessage(`你是需求分诊 Agent。判断用户意图，以 JSON 格式输出。
+
+- 闲聊、问候、简单问答 → action: answer，response 填写直接回复用户的内容
+- 需要需求分析、功能评估、方案讨论 → action: handoff_to_analysis，response 设为空字符串
+- 只需风险评估、安全审查 → action: handoff_to_risk，response 设为空字符串
+交接时给出简要理由。`),
+        new HumanMessage(state.input),
+      ]),
+      'triage',
+    );
+
+    if (result.action === 'answer') {
+      console.log(`[UIChat] triage → answer | ${(result.response || '').slice(0, 50)}`);
+      return {
+        messages: [new AIMessage(result.response)],
+        intent: 'chat',
+        chatResponse: result.response,
+        summary: result.response,
+        handoffReason: '',
+      };
     }
-    return { needsClarification: false, clarifiedData: data, questions };
+
+    if (result.action === 'handoff_to_risk') {
+      console.log(`[UIChat] triage → risk_only | reason: ${result.reason}`);
+      return { intent: 'risk_only', handoffReason: result.reason || '' };
+    }
+
+    console.log(`[UIChat] triage → analyze | reason: ${result.reason}`);
+    return { intent: 'analyze', handoffReason: result.reason || '' };
+  } catch (e) {
+    console.log(`[UIChat] triage failed: ${(e as Error).message}, defaulting to analyze`);
+    return { intent: 'analyze', handoffReason: '' };
+  }
+}
+
+async function extractNode(
+  state: typeof RequirementAnalysisState.State,
+  config: { model: BaseChatModel },
+): Promise<Partial<typeof RequirementAnalysisState.State>> {
+  const { model } = config;
+  if (state.extracted && typeof state.extracted === 'object' && Object.keys(state.extracted).length > 0) {
+    console.log('[LangGraph] extractStep: using cached extracted data from checkpoint, skip LLM');
+    return {};
+  }
+  try {
+    const t0 = Date.now();
+    console.log('[LangGraph] ========== ANALYSIS PIPELINE START ==========');
+    const agent = createExtractAgent(model);
+    let fullText = '';
+    const stream = await withTimeout(agent.stream({ input: state.input }), 'extractStep');
+    for await (const chunk of stream) {
+      fullText += extractText(chunk);
+    }
+    const extracted = parseJson(fullText, { title: state.input.slice(0, 50), reqType: 'functional', priority: 'P2', description: state.input, missingFields: ['详细描述'] });
+    console.log(`[计时] extractStep 完成，耗时 ${Date.now() - t0}ms`);
+    return { extracted: extracted as Record<string, unknown> };
+  } catch (e) {
+    console.log(`[LangGraph] extractStep: failed - ${(e as Error).message}`);
+    return { extracted: { title: state.input.slice(0, 50), reqType: 'functional', priority: 'P2', description: state.input, missingFields: [] } };
+  }
+}
+
+async function clarifyNodeFn(
+  state: typeof RequirementAnalysisState.State,
+  config: { model: BaseChatModel },
+): Promise<Partial<typeof RequirementAnalysisState.State>> {
+  const { model } = config;
+  if (state.skipClarify) {
+    console.log('[LangGraph] clarifyStep: skip (no conversationId)');
+    return { needsClarification: false, clarifiedData: {}, questions: [] };
   }
 
-  function buildClarifyReturn(plan: Record<string, unknown>, nextQ: QuestionItem) {
-    return {
-      needsClarification: true,
-      currentQuestion: nextQ,
-      questions: plan.questions as QuestionItem[],
-    };
+  const plan = state.clarifyPlan as Record<string, unknown> | null;
+  const answer = state.clarifyAnswer;
+
+  if (plan && answer) {
+    return handleClarifyAnswer(plan, answer);
   }
 
-  function handleClarifyAnswer(
-    plan: Record<string, unknown>,
-    answer: { questionId: string; answer: string; source: string },
-  ) {
+  if (plan && !answer) {
     const questions = plan.questions as QuestionItem[];
     const idx = (plan.currentQuestionIndex as number) || 0;
-    const q = questions[idx];
-
-    if (!q) return buildClarifyDone(questions);
-
-    // chip 点击直接接受
-    const valid = answer.source === 'chip' || isValidAnswer(answer.answer);
-
-    if (valid) {
-      q.answer = answer.answer;
-      q.status = 'answered';
-      // 找下一个 pending
-      const nextIdx = questions.findIndex((_q, i) => i > idx && _q.status === 'pending');
-      if (nextIdx === -1) return buildClarifyDone(questions);
-      plan.currentQuestionIndex = nextIdx;
-      return buildClarifyReturn(plan, questions[nextIdx]);
+    if (idx < questions.length) {
+      return { needsClarification: true, currentQuestion: questions[idx], questions };
     }
-
-    // 无效答案
-    q.retryCount++;
-    if (q.retryCount >= 2) {
-      q.skipped = true;
-      q.status = 'skipped';
-      const nextIdx = questions.findIndex((_q, i) => i > idx && _q.status === 'pending');
-      if (nextIdx === -1) return buildClarifyDone(questions);
-      plan.currentQuestionIndex = nextIdx;
-      return buildClarifyReturn(plan, questions[nextIdx]);
-    }
-    // 重问同一问题
-    return {
-      needsClarification: true,
-      currentQuestion: q,
-      questions,
-      retryHint: '请提供更详细的回答',
-    };
+    return buildClarifyDone(questions);
   }
 
-  return {
-  // ====== Classifier ======
+  try {
+    const t0 = Date.now();
+    const agent = createClarifyAgent(model);
+    console.log('[LangGraph] clarifyStep: generating question plan...');
+    const result = await withTimeout(
+      agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }),
+      'clarifyStep',
+    );
+    const text = typeof result.content === 'string'
+      ? result.content
+      : Array.isArray(result.content) ? result.content.map((c: any) => c.text || '').join('') : '';
+    const parsed = parseJson(text, { questions: [] });
+    const rawQuestions: Array<Record<string, unknown>> = parsed.questions || [];
+    const questions: QuestionItem[] = rawQuestions.map((q, i) => ({
+      id: (q.id as string) || `q${i + 1}`,
+      question: (q.question as string) || '',
+      options: Array.isArray(q.options) ? q.options as string[] : [],
+      multiSelect: (q.multiSelect as boolean) || false,
+      answer: null,
+      retryCount: 0,
+      skipped: false,
+      status: 'pending',
+    }));
 
-  classifierNode: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    // 澄清模式：跳过 LLM 分类，直接进入 analyze 管线
-    if (state.clarifyAnswer) {
-      console.log('[UIChat] classify → analyze (clarify mode, skip LLM)');
-      onProgress?.('classifier', '意图识别完成');
-      return { intent: 'analyze' };
-    }
-    try {
-      const response = await withTimeout(
-        model.invoke([
-          new SystemMessage(CLASSIFIER_PROMPT),
-          new HumanMessage(state.input),
-        ]),
-        'classifier',
-      );
-      const text = typeof response.content === 'string'
-        ? response.content
-        : Array.isArray(response.content)
-          ? response.content.map((c: any) => c.text || '').join('')
-          : '';
-      const parsed = parseJson(text, { intent: 'chat', reasoning: '' });
-      const validated = intentSchema.parse(parsed);
-      console.log(`[UIChat] classify → ${validated.intent} | ${validated.reasoning}`);
-      onProgress?.('classifier', '意图识别完成');
-      return { intent: validated.intent };
-    } catch (e) {
-      console.log(`[UIChat] classify failed: ${(e as Error).message}, defaulting to chat`);
-      onProgress?.('classifier', '意图识别完成');
-      return { intent: 'chat' };
-    }
-  },
-
-  // ====== Fast-Path Handlers (with timeout) ======
-
-  queryHandlerNode: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    try {
-      console.log(`[LangGraph] queryHandler: streaming LLM...`);
-      let fullText = '';
-      const stream = await withTimeout(
-        model.stream([
-          { role: 'system', content: '你是需求查询助手。简洁回答查询。' },
-          ...state.history,
-          { role: 'user', content: state.input },
-        ]),
-        'queryHandler',
-      );
-      for await (const chunk of stream) {
-        const text = extractText(chunk);
-        if (text) { fullText += text; onToken?.(text); }
-      }
-      console.log(`[LangGraph] queryHandler: stream done (${fullText.length} chars)`);
-      onProgress?.('queryHandler', '查询完成');
-      return { queryResponse: fullText, summary: fullText };
-    } catch (e) {
-      console.log(`[LangGraph] queryHandler: failed - ${(e as Error).message}`);
-      return { queryResponse: '查询服务暂不可用', summary: '查询服务暂不可用' };
-    }
-  },
-
-  chatHandlerNode: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    try {
-      console.log(`[LangGraph] chatHandler: streaming LLM...`);
-      let fullText = '';
-      const stream = await withTimeout(
-        model.stream([
-          { role: 'system', content: '你是友好的AI助手。用自然、亲切的语气回复。' },
-          ...state.history,
-          { role: 'user', content: state.input },
-        ]),
-        'chatHandler',
-      );
-      for await (const chunk of stream) {
-        const text = extractText(chunk);
-        if (text) { fullText += text; onToken?.(text); }
-      }
-      console.log(`[LangGraph] chatHandler: stream done (${fullText.length} chars)`);
-      onProgress?.('chatHandler', '对话完成');
-      return { chatResponse: fullText, summary: fullText };
-    } catch (e) {
-      console.log(`[LangGraph] chatHandler: failed - ${(e as Error).message}`);
-      return { chatResponse: '抱歉，服务暂不可用，请稍后再试。', summary: '抱歉，服务暂不可用，请稍后再试。' };
-    }
-  },
-
-  // ====== Analysis Pipeline (with timeout per node) ======
-
-  extractStep: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    // 已有缓存，跳过 LLM 调用
-    const cached = state.preExtracted as Record<string, unknown> | null;
-    if (cached?.data && typeof cached.data === 'object' && Object.keys(cached.data as Record<string, unknown>).length > 0) {
-      console.log('[LangGraph] extractStep: using cached extracted data, skip LLM');
-      return { extracted: cached.data as Record<string, unknown> };
-    }
-
-    try {
-      console.log(`[LangGraph] ========== ANALYSIS PIPELINE START ==========`);
-      const agent = createExtractAgent(model);
-      console.log(`[LangGraph] extractStep: streaming LLM...`);
-      let fullText = '';
-      const stream = await withTimeout(agent.stream({ input: state.input }), 'extractStep');
-      for await (const chunk of stream) {
-        fullText += extractText(chunk);
-      }
-      console.log(`[LangGraph] extractStep: stream done (${fullText.length} chars)`);
-      onProgress?.('extractStep', '需求信息抽取完成');
-      const extracted = parseJson(fullText, { title: state.input.slice(0, 50), reqType: 'functional', priority: 'P2', description: state.input, isComplete: false, missingFields: ['详细描述'] });
-      return { extracted: extracted as Record<string, unknown> };
-    } catch (e) {
-      console.log(`[LangGraph] extractStep: failed - ${(e as Error).message}`);
-      return { extracted: { title: state.input.slice(0, 50), reqType: 'functional', priority: 'P2', description: state.input, isComplete: true, missingFields: [] } };
-    }
-  },
-
-  clarifyStep: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    // 无 conversationId，跳过澄清
-    if (state.skipClarify) {
-      console.log('[LangGraph] clarifyStep: skip (no conversationId)');
+    if (questions.length === 0) {
+      console.log(`[计时] clarifyStep 完成 (无需澄清)，耗时 ${Date.now() - t0}ms`);
       return { needsClarification: false, clarifiedData: {}, questions: [] };
     }
 
-    const plan = state.clarifyPlan as Record<string, unknown> | null;
-    const answer = state.clarifyAnswer;
+    console.log(`[计时] clarifyStep 完成 (${questions.length} 个问题)，耗时 ${Date.now() - t0}ms`);
+    const newPlan = { questions, currentQuestionIndex: 0 };
+    return { needsClarification: true, currentQuestion: questions[0], questions, clarifyPlan: newPlan };
+  } catch (e) {
+    console.log(`[LangGraph] clarifyStep: failed - ${(e as Error).message}`);
+    return { needsClarification: false, clarifiedData: {}, questions: [] };
+  }
+}
 
-    // 已有 plan 且本轮有回答 → 规则验证 + 更新 plan
-    if (plan && answer) {
-      return handleClarifyAnswer(plan, answer);
-    }
+async function analysisNodeFn(
+  state: typeof RequirementAnalysisState.State,
+  config: { model: BaseChatModel },
+): Promise<Partial<typeof RequirementAnalysisState.State>> {
+  const { model } = config;
+  try {
+    const t0 = Date.now();
+    const subGraph = createAnalysisSupervisorSubGraph(model);
+    console.log('[LangGraph] analysisStep: invoking supervisor subgraph...');
+    const result = await withTimeout(subGraph.invoke({
+      input: state.input,
+      extracted: state.extracted,
+      messages: [],
+      toolLoopCount: 0,
+      activeExperts: ['functional'],
+      functionalAnalysis: '',
+      performanceAnalysis: '',
+      securityAnalysis: '',
+      complianceAnalysis: '',
+    }), 'analysisStep');
+    const content = result.analysisResult || '';
+    console.log(`[计时] analysisStep 完成 (${content.length} chars, experts: [${(result.activeExperts || []).join(', ')}])，耗时 ${Date.now() - t0}ms`);
+    return {
+      analysisResult: content,
+      activeExperts: result.activeExperts,
+      functionalAnalysis: result.functionalAnalysis,
+      performanceAnalysis: result.performanceAnalysis,
+      securityAnalysis: result.securityAnalysis,
+      complianceAnalysis: result.complianceAnalysis,
+    };
+  } catch (e) {
+    console.log(`[LangGraph] analysisStep: failed - ${(e as Error).message}`);
+    return { analysisResult: '分析服务暂不可用，请稍后重试。' };
+  }
+}
 
-    // 已有 plan 但本轮无回答（仅首轮之后可能发生）→ 继续当前问题
-    if (plan && !answer) {
-      const questions = plan.questions as QuestionItem[];
-      const idx = (plan.currentQuestionIndex as number) || 0;
-      if (idx < questions.length) {
-        return {
-          needsClarification: true,
-          currentQuestion: questions[idx],
-          questions,
-        };
-      }
-      return buildClarifyDone(questions);
-    }
-
-    // 无 plan（首轮）→ LLM 生成完整 questions 列表
-    try {
-      const agent = createClarifyAgent(model);
-      console.log(`[LangGraph] clarifyStep: generating question plan...`);
-      const result = await withTimeout(
-        agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }),
-        'clarifyStep',
-      );
-      const text = typeof result.content === 'string'
-        ? result.content
-        : Array.isArray(result.content) ? result.content.map((c: any) => c.text || '').join('') : '';
-      console.log(`[LangGraph] clarifyStep: LLM done (${text.length} chars)`);
-      const parsed = parseJson(text, { questions: [] });
-      const rawQuestions: Array<Record<string, unknown>> = parsed.questions || [];
-      const questions: QuestionItem[] = rawQuestions.map((q, i) => ({
-        id: (q.id as string) || `q${i + 1}`,
-        question: (q.question as string) || '',
-        options: Array.isArray(q.options) ? q.options as string[] : [],
-        answer: null,
-        retryCount: 0,
-        skipped: false,
-        status: 'pending',
-      }));
-
-      if (questions.length === 0) {
-        console.log('[LangGraph] clarifyStep: no questions needed, proceed to analysis');
-        onProgress?.('clarifyStep', '需求澄清完成');
-        return { needsClarification: false, clarifiedData: {}, questions: [] };
-      }
-
-      console.log(`[LangGraph] clarifyStep: ${questions.length} questions generated`);
-      onProgress?.('clarifyStep', `需求澄清：${questions.length} 个待确认问题`);
-      return {
-        needsClarification: true,
-        currentQuestion: questions[0],
-        questions,
-      };
-    } catch (e) {
-      console.log(`[LangGraph] clarifyStep: failed - ${(e as Error).message}`);
-      return { needsClarification: false, clarifiedData: {}, questions: [] };
-    }
-  },
-
-  analysisStep: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    try {
-      onProgress?.('analysisStep', '正在进行深度分析，这一步耗时较长...');
-      const subGraph = createAnalysisSubGraph(model);
-      console.log(`[LangGraph] analysisStep: invoking ReAct subgraph...`);
-      const result = await withTimeout(subGraph.invoke({
-        messages: [],
-        extracted: state.extracted,
-        toolLoopCount: 0,
-        analysisResult: '',
-      }), 'analysisStep');
-      const content = result.analysisResult || '';
-      console.log(`[LangGraph] analysisStep: subgraph done (${content.length} chars, ${result.toolLoopCount} tool loops)`);
-      onProgress?.('analysisStep', '需求深度分析完成');
-      return { analysisResult: content, toolLoopCount: result.toolLoopCount };
-    } catch (e) {
-      console.log(`[LangGraph] analysisStep: failed - ${(e as Error).message}`);
-      return { analysisResult: '分析服务暂不可用，请稍后重试。' };
-    }
-  },
-
-  riskStep: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    try {
-      const agent = createRiskAgent(model);
-      console.log(`[LangGraph] riskStep: invoking LLM...`);
-      const result = await withTimeout(agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }), 'riskStep');
-      const content = typeof result.content === 'string' ? result.content : '';
-      console.log(`[LangGraph] riskStep: invoke done (${content.length} chars)`);
-      onProgress?.('riskStep', '风险评估完成');
-      return { riskResult: content || '风险评估暂不可用' };
-    } catch (e) {
-      console.log(`[LangGraph] riskStep: failed - ${(e as Error).message}`);
-      return { riskResult: '风险评估暂不可用。' };
-    }
-  },
-
-  summaryStep: async (
-    state: typeof RequirementAnalysisState.State,
-  ): Promise<Partial<typeof RequirementAnalysisState.State>> => {
-    try {
-      const agent = createSummaryAgent(model);
-      console.log(`[LangGraph] summaryStep: streaming LLM...`);
-      let fullText = '';
-      const stream = await withTimeout(agent.stream({
-        input: state.input, extractResult: JSON.stringify(state.extracted),
-        analysisResult: state.analysisResult, riskResult: state.riskResult,
-        retrievedContext: state.retrievedContext || '无相关参考文档',
-      }), 'summaryStep');
-      for await (const chunk of stream) {
-        const text = extractText(chunk);
-        if (text) { fullText += text; onToken?.(text); }
-      }
-      console.log(`[LangGraph] summaryStep: stream done (${fullText.length} chars)`);
-      onProgress?.('summaryStep', '汇总报告生成中...');
-      return { summary: fullText || '汇总暂不可用' };
-    } catch (e) {
-      console.log(`[LangGraph] summaryStep: failed - ${(e as Error).message}`);
-      return { summary: '汇总服务暂不可用，请稍后重试。' };
-    }
-  },
-  };
-};
+async function riskNodeFn(
+  state: typeof RequirementAnalysisState.State,
+  config: { model: BaseChatModel },
+): Promise<Partial<typeof RequirementAnalysisState.State>> {
+  const { model } = config;
+  try {
+    const t0 = Date.now();
+    const agent = createRiskAgent(model);
+    const result = await withTimeout(agent.invoke({ input: state.input, extractResult: JSON.stringify(state.extracted) }), 'riskStep');
+    const content = typeof result.content === 'string' ? result.content : '';
+    console.log(`[计时] riskStep 完成 (${content.length} chars)，耗时 ${Date.now() - t0}ms`);
+    return { riskResult: content || '风险评估暂不可用' };
+  } catch (e) {
+    console.log(`[LangGraph] riskStep: failed - ${(e as Error).message}`);
+    return { riskResult: '风险评估暂不可用。' };
+  }
+}
 
 // --- Route Function ---
 
-function routeAfterClarify(state: typeof RequirementAnalysisState.State): string {
-  const route = state.needsClarification ? 'END' : 'analysisStep';
-  console.log(`[UIChat] route: clarify → ${route}`);
-  return route === 'END' ? END : 'analysisStep';
+function routeAfterClarify(state: typeof RequirementAnalysisState.State): string | string[] {
+  if (state.needsClarification) {
+    console.log('[UIChat] route: clarify → END');
+    return END;
+  }
+  console.log('[UIChat] route: clarify → [analysisStep, riskStep] (parallel)');
+  return ['analysisStep', 'riskStep'];
 }
 
 function routeByIntent(state: typeof RequirementAnalysisState.State): string {
-  const routeMap: Record<string, string> = {
-    analyze: 'extractStep',
-    query: 'queryHandler',
-    chat: 'chatHandler',
-  };
-  const route = routeMap[state.intent] || 'chatHandler';
-  console.log(`[UIChat] route: intent=${state.intent} → ${route}`);
-  return route;
+  if (state.intent === 'analyze') return 'extractStep';
+  if (state.intent === 'risk_only') return 'riskStep';
+  // chat: triage 已直接回答，短路结束
+  console.log('[UIChat] route: triage answer → END');
+  return END;
 }
 
 // --- Graph Factory ---
 
 export function createAnalysisGraph(
-  model: BaseChatModel,
-  onProgress?: (step: string, message: string) => void,
-  onToken?: (content: string) => void,
+  lightModel: BaseChatModel,
+  strongModel: BaseChatModel,
+  _onProgress?: (step: string, message: string) => void,
+  _onToken?: (content: string) => void,
+  checkpointer?: MemorySaver,
 ) {
-  const nodes = createNodes(model, onProgress, onToken);
+  const summarySubGraph = createSummarySubGraph(strongModel);
 
-  return new StateGraph(RequirementAnalysisState)
-    // classifier
-    .addNode('classifier', nodes.classifierNode)
-    // fast paths
-    .addNode('queryHandler', nodes.queryHandlerNode)
-    .addNode('chatHandler', nodes.chatHandlerNode)
-    // analysis pipeline
-    .addNode('extractStep', nodes.extractStep)
-    .addNode('clarifyStep', nodes.clarifyStep)
-    .addNode('analysisStep', nodes.analysisStep)
-    .addNode('riskStep', nodes.riskStep)
-    .addNode('summaryStep', nodes.summaryStep)
+  const builder = new StateGraph(RequirementAnalysisState)
+    .addNode('triage', (state) => triageNodeFn(state, { model: lightModel }))
+    .addNode('extractStep', (state) => extractNode(state, { model: lightModel }))
+    .addNode('clarifyStep', (state) => clarifyNodeFn(state, { model: strongModel }))
+    .addNode('analysisStep', (state) => analysisNodeFn(state, { model: lightModel }))
+    .addNode('riskStep', (state) => riskNodeFn(state, { model: lightModel }))
+    .addNode('summaryStep', summarySubGraph)
     // edges
-    .addEdge(START, 'classifier')
-    .addConditionalEdges('classifier', routeByIntent, {
+    .addEdge(START, 'triage')
+    .addConditionalEdges('triage', routeByIntent, {
       extractStep: 'extractStep',
-      queryHandler: 'queryHandler',
-      chatHandler: 'chatHandler',
+      riskStep: 'riskStep',
+      [END]: END,
     })
-    .addEdge('queryHandler', END)
-    .addEdge('chatHandler', END)
     .addEdge('extractStep', 'clarifyStep')
     .addConditionalEdges('clarifyStep', routeAfterClarify, {
       analysisStep: 'analysisStep',
+      riskStep: 'riskStep',
       [END]: END,
     })
-    .addEdge('analysisStep', 'riskStep')
+    .addEdge('analysisStep', 'summaryStep')
     .addEdge('riskStep', 'summaryStep')
-    .addEdge('summaryStep', END)
-    .compile();
+    .addEdge('summaryStep', END);
+
+  return checkpointer
+    ? builder.compile({ checkpointer })
+    : builder.compile();
 }
 
 // --- Output Type ---
 
 export interface RunAnalysisGraphOutput {
-  intent: 'analyze' | 'query' | 'chat';
+  intent: 'analyze' | 'chat' | 'risk_only';
   summary: string;
   extracted?: Record<string, unknown>;
   clarified?: { needsClarification: boolean; questions: string[] };
@@ -732,40 +657,64 @@ export interface RunAnalysisGraphOutput {
   retryHint?: string;
   analysisResult?: string;
   riskResult?: string;
-  queryResponse?: string;
   chatResponse?: string;
+  // Multi-Agent 专家相关字段
+  functionalAnalysis?: string;
+  performanceAnalysis?: string;
+  securityAnalysis?: string;
+  complianceAnalysis?: string;
+  activeExperts?: string[];
   steps: Record<string, string>;
 }
 
 // --- Runner ---
 
 export async function runAnalysisGraph(args: {
-  input: string;
+  input?: string;
   retrievedContext: string;
-  model: BaseChatModel;
+  lightModel: BaseChatModel;
+  strongModel: BaseChatModel;
   history?: { role: 'user' | 'assistant'; content: string }[];
-  preExtracted?: Record<string, unknown> | null;
-  clarifyPlan?: Record<string, unknown> | null;
+  threadId?: string;
   clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
   skipClarify?: boolean;
   onProgress?: (step: string, message: string) => void;
   onToken?: (content: string) => void;
 }): Promise<RunAnalysisGraphOutput> {
-  const graph = createAnalysisGraph(args.model, args.onProgress, args.onToken);
-  const result = await graph.invoke({
-    input: args.input,
-    retrievedContext: args.retrievedContext,
-    history: args.history || [],
-    messages: [],
-    preExtracted: args.preExtracted || null,
-    clarifyPlan: args.clarifyPlan || null,
-    clarifyAnswer: args.clarifyAnswer || null,
-    skipClarify: args.skipClarify || false,
-  });
+  const useCheckpoint = !!args.threadId;
+  const graph = createAnalysisGraph(
+    args.lightModel,
+    args.strongModel,
+    args.onProgress,
+    args.onToken,
+    useCheckpoint ? hitlCheckpointer : undefined,
+  );
 
-  const intent = (result.intent as 'analyze' | 'query' | 'chat') || 'analyze';
+  const config = useCheckpoint
+    ? { configurable: { thread_id: args.threadId } }
+    : undefined;
 
-  const steps: Record<string, string> = { classifier: intent };
+  // 澄清回答：先 updateState 写入答案，再 invoke(null) 恢复
+  if (useCheckpoint && args.clarifyAnswer) {
+    await graph.updateState(config!, { clarifyAnswer: args.clarifyAnswer });
+  }
+
+  const result = await graph.invoke(
+    useCheckpoint && args.clarifyAnswer
+      ? { input: args.input || '' }  // resume: 最小 state，其余从 checkpoint 恢复
+      : {
+          input: args.input || '',
+          retrievedContext: args.retrievedContext,
+          history: args.history || [],
+          messages: [],
+          skipClarify: args.skipClarify || false,
+        },
+    config,
+  );
+
+  const intent = (result.intent as 'analyze' | 'query' | 'chat' | 'risk_only') || 'analyze';
+
+  const steps: Record<string, string> = { triage: intent };
 
   if (intent === 'analyze') {
     steps.extract = JSON.stringify(result.extracted ?? {});
@@ -773,11 +722,21 @@ export async function runAnalysisGraph(args: {
     steps.analysis = result.analysisResult ?? '';
     steps.risk = result.riskResult ?? '';
     steps.summary = result.summary ?? '';
-  } else if (intent === 'query') {
-    steps.query = result.queryResponse ?? '';
+  } else if (intent === 'risk_only') {
+    steps.risk = result.riskResult ?? '';
+    steps.summary = result.summary ?? '';
   } else {
     steps.chat = result.chatResponse ?? '';
   }
+
+  // 构建专家字段（仅 analyze 意图）
+  const expertFields = intent === 'analyze' ? {
+    functionalAnalysis: (result.functionalAnalysis as string) ?? '',
+    performanceAnalysis: (result.performanceAnalysis as string) ?? '',
+    securityAnalysis: (result.securityAnalysis as string) ?? '',
+    complianceAnalysis: (result.complianceAnalysis as string) ?? '',
+    activeExperts: (result.activeExperts as string[]) ?? [],
+  } : {};
 
   return {
     intent,
@@ -793,6 +752,7 @@ export async function runAnalysisGraph(args: {
     riskResult: intent === 'analyze' ? (result.riskResult as string) ?? '' : undefined,
     queryResponse: intent === 'query' ? (result.queryResponse as string) ?? '' : undefined,
     chatResponse: intent === 'chat' ? (result.chatResponse as string) ?? '' : undefined,
+    ...expertFields,
     steps,
   };
 }
@@ -809,60 +769,80 @@ export type GraphStreamEvent =
 
 // --- Stream Runner ---
 
-/** 内部节点名（在 streamEvents 中过滤掉） */
+/** 内部节点名（在 streamEvents 中过滤掉不产生 node_start/node_end 事件） */
 const INTERNAL_NODES = [
   'RunnableSequence', 'StateGraph', 'LangGraph',
   'RunnableLambda', '__start__', '__end__',
-  'agent', 'tools', 'finalize', // ReAct 子图内部
+  'agent', 'tools', 'finalize',           // ReAct subgraph internals (shared by all experts)
+  'supervisor', 'aggregator',             // Supervisor subgraph internal nodes
+  'functional_expert', 'performance_expert',  // Expert compiled subgraphs (not streamed)
+  'security_expert', 'compliance_expert',
+  'actor', 'critic', 'refine', 'streamFinal', // Critic-Refine subgraph internals
 ];
 
-/** 不流式输出 token 的节点（JSON 输出 + invoke-only + 子图内部） */
-const SKIP_TOKEN_NODES = ['classifier', 'extractStep', 'clarifyStep', 'analysisStep', 'riskStep'];
+/** 不流式输出 token 的节点（JSON 输出 + invoke-only + subgraph） */
+const SKIP_TOKEN_NODES = ['triage', 'extractStep', 'clarifyStep', 'analysisStep', 'riskStep', 'summaryStep'];
 
 /**
  * 流式运行需求分析图。
  * 使用 LangGraph streamEvents API 实现 token 级流式输出。
  */
 export async function* streamAnalysisGraph(args: {
-  input: string;
+  input?: string;
   retrievedContext: string;
-  model: BaseChatModel;
+  lightModel: BaseChatModel;
+  strongModel: BaseChatModel;
   history?: { role: 'user' | 'assistant'; content: string }[];
-  preExtracted?: Record<string, unknown> | null;
-  clarifyPlan?: Record<string, unknown> | null;
+  threadId?: string;
   clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
   skipClarify?: boolean;
+  tokenWriter?: (chunk: string) => void;
 }): AsyncGenerator<GraphStreamEvent> {
-  const { input, retrievedContext, model } = args;
+  const { input, retrievedContext, lightModel, strongModel, tokenWriter } = args;
+  const useCheckpoint = !!args.threadId;
 
-  yield {
-    type: 'log',
-    level: 'info',
-    message: 'streamAnalysisGraph 开始',
-    data: { input: input.substring(0, 100) },
-  };
-
-  // 创建图（不传 callbacks，由 streamEvents 捕获原始事件）
-  const graph = createAnalysisGraph(model);
+  // 创建图（注入 checkpointer 以支持跨请求状态保持）
+  const graph = createAnalysisGraph(
+    lightModel,
+    strongModel,
+    undefined,
+    undefined,
+    useCheckpoint ? hitlCheckpointer : undefined,
+  );
 
   const visitedNodes = new Set<string>();
   let currentNode: string | null = null;
   // 累积各节点的 partial state 输出，避免依赖 streamEvents 的 top-level finalState
   const accumulated: Record<string, unknown> = {};
 
+  const configurable: Record<string, unknown> = {};
+  if (useCheckpoint) configurable.thread_id = args.threadId;
+  if (tokenWriter) configurable.tokenWriter = tokenWriter;
+
+  const config = Object.keys(configurable).length > 0
+    ? { configurable }
+    : undefined;
+
   try {
+    // 澄清回答：先 updateState 写入答案，再 invoke 恢复
+    if (useCheckpoint && args.clarifyAnswer) {
+      await graph.updateState(config!, { clarifyAnswer: args.clarifyAnswer });
+    }
+
+    // resume 时不传 null（避免 streamEvents 不识别 checkpoint），传最小 state
+    const initialState = useCheckpoint && args.clarifyAnswer
+      ? { input: input || '' }
+      : {
+          input: input || '',
+          retrievedContext,
+          history: args.history || [],
+          messages: [],
+          skipClarify: args.skipClarify || false,
+        };
+
     const eventStream = graph.streamEvents(
-      {
-        input,
-        retrievedContext,
-        history: args.history || [],
-        messages: [],
-        preExtracted: args.preExtracted || null,
-        clarifyPlan: args.clarifyPlan || null,
-        clarifyAnswer: args.clarifyAnswer || null,
-        skipClarify: args.skipClarify || false,
-      },
-      { version: 'v2' },
+      initialState,
+      { version: 'v2', configurable },
     );
 
     for await (const event of eventStream) {
@@ -905,7 +885,7 @@ export async function* streamAnalysisGraph(args: {
 
     // 从累积状态构建结果（不再 fallback invoke）
     const result = accumulated as unknown as typeof RequirementAnalysisState.State;
-    const intent = (result.intent as 'analyze' | 'query' | 'chat') || 'analyze';
+    const intent = (result.intent as 'analyze' | 'query' | 'chat' | 'risk_only') || 'analyze';
 
     yield {
       type: 'log',
@@ -915,7 +895,7 @@ export async function* streamAnalysisGraph(args: {
     };
 
     // 构建步骤
-    const steps: Record<string, string> = { classifier: intent };
+    const steps: Record<string, string> = { triage: intent };
     if (intent === 'analyze') {
       steps.extract = JSON.stringify(result.extracted ?? {});
       steps.clarify = JSON.stringify(result.clarified ?? {});
@@ -924,11 +904,21 @@ export async function* streamAnalysisGraph(args: {
         steps.risk = result.riskResult ?? '';
         steps.summary = result.summary ?? '';
       }
-    } else if (intent === 'query') {
-      steps.query = result.queryResponse ?? '';
+    } else if (intent === 'risk_only') {
+      steps.risk = result.riskResult ?? '';
+      steps.summary = result.summary ?? '';
     } else {
       steps.chat = result.chatResponse ?? '';
     }
+
+    // 构建专家字段（仅 analyze 意图 + 非澄清模式）
+    const expertFields = (intent === 'analyze' && !result.needsClarification) ? {
+      functionalAnalysis: (result.functionalAnalysis as string) ?? '',
+      performanceAnalysis: (result.performanceAnalysis as string) ?? '',
+      securityAnalysis: (result.securityAnalysis as string) ?? '',
+      complianceAnalysis: (result.complianceAnalysis as string) ?? '',
+      activeExperts: (result.activeExperts as string[]) ?? [],
+    } : {};
 
     const finalResult: RunAnalysisGraphOutput = {
       intent,
@@ -941,9 +931,9 @@ export async function* streamAnalysisGraph(args: {
       clarifiedData: intent === 'analyze' ? (result.clarifiedData as Record<string, string>) ?? {} : undefined,
       retryHint: intent === 'analyze' ? (result.retryHint as string) ?? '' : undefined,
       analysisResult: intent === 'analyze' ? (result.analysisResult as string) ?? '' : undefined,
-      riskResult: intent === 'analyze' ? (result.riskResult as string) ?? '' : undefined,
-      queryResponse: intent === 'query' ? (result.queryResponse as string) ?? '' : undefined,
-      chatResponse: intent === 'chat' ? (result.chatResponse as string) ?? '' : undefined,
+      riskResult: (intent === 'analyze' || intent === 'risk_only') ? (result.riskResult as string) ?? '' : undefined,
+      chatResponse: (intent === 'chat' || intent === 'risk_only') ? (result.chatResponse || result.summary as string) ?? '' : undefined,
+      ...expertFields,
       steps,
     };
 
@@ -965,3 +955,11 @@ export async function* streamAnalysisGraph(args: {
     throw err;
   }
 }
+
+// --- HITL Checkpointer ---
+
+/**
+ * 共享 MemorySaver，同一 thread_id 的 checkpoint 在多次调用间保持。
+ * 生产环境可替换为 PostgresSaver（接口等价）。
+ */
+export const hitlCheckpointer = new MemorySaver();

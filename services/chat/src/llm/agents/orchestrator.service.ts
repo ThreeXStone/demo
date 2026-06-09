@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RunnableLambda, type RunnableConfig } from '@langchain/core/runnables';
-import { createChatModel } from '../model.factory';
+import { createChatModel, createChatModelFromDbConfig, createLightChatModel } from '../model.factory';
+import { ModelConfigService } from '../../model-config/model-config.service';
 import {
   runAnalysisGraph,
   streamAnalysisGraph,
@@ -12,25 +13,26 @@ import type { UIContext } from '../../conversation/ui-action.parser';
 
 /** 图节点名 → Agent 名映射 */
 const NODE_TO_AGENT: Record<string, string> = {
-  classifier: 'classifierAgent',
+  triage: 'triageAgent',
   extractStep: 'extractAgent',
   clarifyStep: 'clarifyAgent',
-  analysisStep: 'analysisAgent',
+  analysisStep: 'analysisAgent',       // Wraps supervisor + multi-expert internally
   riskStep: 'riskAgent',
   summaryStep: 'summaryAgent',
-  queryHandler: 'queryAgent',
-  chatHandler: 'chatAgent',
 };
 
 /** Agent 执行顺序 */
 const AGENT_ORDER = [
-  'classifierAgent', 'extractAgent', 'clarifyAgent',
+  'triageAgent', 'extractAgent', 'clarifyAgent',
   'analysisAgent', 'riskAgent', 'summaryAgent',
 ];
 
 @Injectable()
 export class OrchestratorService {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly modelConfigService: ModelConfigService,
+  ) {}
 
   /**
    * 同步执行需求分析。
@@ -39,22 +41,23 @@ export class OrchestratorService {
     input: string;
     retrievedContext: string;
     modelName?: string;
+    modelConfigId?: string;
     history?: { role: 'user' | 'assistant'; content: string }[];
-    preExtracted?: Record<string, unknown> | null;
-    clarifyPlan?: Record<string, unknown> | null;
+    threadId?: string;
     clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
     skipClarify?: boolean;
   }): Promise<OrchestratorResult> {
-    const model = this.buildModel(args.modelName);
+    const { strongModel, apiKey, baseUrl } = await this.buildModel(args.modelName, args.modelConfigId);
+    const lightModel = this.buildLightModel(apiKey, baseUrl);
 
     try {
       const result: RunAnalysisGraphOutput = await runAnalysisGraph({
         input: args.input,
         retrievedContext: args.retrievedContext,
-        model,
+        lightModel,
+        strongModel,
         history: args.history,
-        preExtracted: args.preExtracted,
-        clarifyPlan: args.clarifyPlan,
+        threadId: args.threadId,
         clarifyAnswer: args.clarifyAnswer,
         skipClarify: args.skipClarify,
       });
@@ -79,12 +82,13 @@ export class OrchestratorService {
     input: string;
     retrievedContext: string;
     modelName?: string;
+    modelConfigId?: string;
     history?: { role: 'user' | 'assistant'; content: string }[];
-    preExtracted?: Record<string, unknown> | null;
-    clarifyPlan?: Record<string, unknown> | null;
+    threadId?: string;
     clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
     skipClarify?: boolean;
     uiContext?: UIContext;
+    tokenWriter?: (chunk: string) => void;
   }): AsyncGenerator<OrchestratorStreamEvent> {
     const usedAgents: string[] = [];
     const steps: Record<string, string> = {};
@@ -98,24 +102,19 @@ export class OrchestratorService {
         return;
       }
 
-      const model = this.buildModel(args.modelName);
-
-      yield {
-        type: 'log',
-        level: 'info',
-        message: 'streamOrchestrate 准备执行 graph',
-        data: { input: args.input.substring(0, 100) },
-      };
+      const { strongModel, apiKey, baseUrl } = await this.buildModel(args.modelName, args.modelConfigId);
+      const lightModel = this.buildLightModel(apiKey, baseUrl);
 
       const graphStream = streamAnalysisGraph({
         input: args.input,
         retrievedContext: args.retrievedContext,
-        model,
+        lightModel,
+        strongModel,
         history: args.history,
-        preExtracted: args.preExtracted,
-        clarifyPlan: args.clarifyPlan,
+        threadId: args.threadId,
         clarifyAnswer: args.clarifyAnswer,
         skipClarify: args.skipClarify,
+        tokenWriter: args.tokenWriter,
       });
 
       for await (const event of graphStream) {
@@ -221,7 +220,14 @@ export class OrchestratorService {
 
   // ---- private ----
 
-  private buildModel(modelName?: string) {
+  private async buildModel(modelName?: string, modelConfigId?: string) {
+    // 优先：传入 modelConfigId → 从 DB 加载配置
+    if (modelConfigId) {
+      const dbConfig = await this.modelConfigService.findById(modelConfigId);
+      const strongModel = createChatModelFromDbConfig(dbConfig);
+      return { strongModel, apiKey: dbConfig.apiKey ?? undefined, baseUrl: dbConfig.baseUrl ?? undefined };
+    }
+    // 兜底：现有逻辑（从 ConfigService 读取 .env）
     const model = modelName || this.config.get('LLM_MODEL') || 'deepseek-v4-pro';
     const isGpt = model.startsWith('gpt');
     const apiKey = isGpt
@@ -231,7 +237,12 @@ export class OrchestratorService {
       ? this.config.get('GPT_BASE_URL') || this.config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1'
       : this.config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1';
 
-    return createChatModel({ modelName: model, apiKey, baseUrl });
+    const strongModel = createChatModel({ modelName: model, apiKey, baseUrl });
+    return { strongModel, apiKey, baseUrl };
+  }
+
+  private buildLightModel(apiKey?: string, baseUrl?: string) {
+    return createLightChatModel(apiKey, baseUrl);
   }
 
   private buildResult(graphResult: RunAnalysisGraphOutput): OrchestratorResult {
@@ -270,25 +281,14 @@ export class OrchestratorService {
       };
     }
 
-    if (intent === 'query') {
-      return {
-        responseType: 'markdown',
-        mode: 'fixed',
-        usedAgents: ['classifierAgent', 'queryAgent'],
-        steps: graphResult.steps,
-        report: graphResult.summary,
-        thinking: '意图分类 → 查询需求状态',
-      };
-    }
-
-    // chat
+    // chat（triage 已直接回答，短路结束）
     return {
       responseType: 'markdown',
       mode: 'fixed',
-      usedAgents: ['classifierAgent', 'chatAgent'],
+      usedAgents: ['triageAgent'],
       steps: graphResult.steps,
       report: graphResult.summary,
-      thinking: '意图分类 → 直接对话',
+      thinking: '分诊 → 直接回答（短路）',
     };
   }
 }
