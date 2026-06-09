@@ -71,7 +71,12 @@
       "Bash(dpkg -l)",
       "Bash(echo \"chat-web exit: $?\")",
       "Bash(echo \"chat exit: $?\")",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(lsof -ti:3002)",
+      "Bash(lsof -ti:3003)",
+      "Read(//home/penglei/.claude/agents/**)",
+      "Read(//home/penglei/.claude/**)",
+      "Bash(npx skills *)"
     ]
   },
   "enabledPlugins": {
