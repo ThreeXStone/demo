@@ -7,6 +7,7 @@ import { NotificationController } from './notification/notification.controller';
 import { LogsController } from './logging/logs.controller';
 import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ModelConfigModule } from './model-config/model-config.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { PrismaModule } from './prisma/prisma.module';
     ConversationModule,
     DocumentModule,
     UIProtocolModule,
+    ModelConfigModule,
   ],
   controllers: [NotificationController, LogsController],
   providers: [],

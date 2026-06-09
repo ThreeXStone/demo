@@ -1,9 +1,10 @@
 import { Controller, Post, Body, HttpCode, HttpStatus, Req, Res } from '@nestjs/common';
 import { UIFlowService } from './ui-flow.service';
 import { OrchestratorService } from '../agents/orchestrator.service';
-import { createChatModel } from '../model.factory';
+import { createChatModel, createChatModelFromDbConfig } from '../model.factory';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ModelConfigService } from '../../model-config/model-config.service';
 
 function formatSSE(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -30,6 +31,7 @@ export class UIChatController {
     private readonly orchestrator: OrchestratorService,
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly modelConfigService: ModelConfigService,
   ) {}
 
   private async getSystemMetadata(
@@ -105,7 +107,13 @@ export class UIChatController {
 
   @Post('chat')
   async chat(
-    @Body() body: { sessionId: string; input: string; model?: string; conversationId?: string },
+    @Body() body: {
+      sessionId: string;
+      input: string;
+      model?: string;
+      modelConfigId?: string;
+      conversationId?: string;
+    },
     @Req() req: any,
     @Res() res: any,
   ) {
@@ -113,18 +121,23 @@ export class UIChatController {
     let heartbeat: ReturnType<typeof setInterval> | undefined;
 
     try {
-      const model = body.model || this.config.get('LLM_MODEL') || 'deepseek-v4-pro';
+      let llm;
+      const modelName = body.model || this.config.get('LLM_MODEL') || 'deepseek-v4-pro';
+      if (body.modelConfigId) {
+        const dbConfig = await this.modelConfigService.findById(body.modelConfigId);
+        llm = createChatModelFromDbConfig(dbConfig);
+      } else {
+        llm = createChatModel({
+          modelName,
+          temperature: 0.3,
+          apiKey: this.config.get('OPENAI_API_KEY'),
+          baseUrl: this.config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
+        });
+      }
       const history = await this.getHistory(body.conversationId);
-      console.log(`[UIChat] chat request | session=${body.sessionId} | model=${model} | input="${body.input.slice(0, 80)}"`);
+      console.log(`[UIChat] chat request | session=${body.sessionId} | model=${modelName} | input="${body.input.slice(0, 80)}"`);
       console.log('[UIChat] route: intent=chat → chatHandler');
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
-
-      const llm = createChatModel({
-        modelName: model,
-        temperature: 0.3,
-        apiKey: this.config.get('OPENAI_API_KEY'),
-        baseUrl: this.config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
-      });
 
       const stream = await llm.stream([
         { role: 'system', content: '你是友好的AI助手。用自然、亲切的语气回复。' },
@@ -164,7 +177,13 @@ export class UIChatController {
 
   @Post('query')
   async query(
-    @Body() body: { sessionId: string; input: string; model?: string; conversationId?: string },
+    @Body() body: {
+      sessionId: string;
+      input: string;
+      model?: string;
+      modelConfigId?: string;
+      conversationId?: string;
+    },
     @Req() req: any,
     @Res() res: any,
   ) {
@@ -172,18 +191,23 @@ export class UIChatController {
     let heartbeat: ReturnType<typeof setInterval> | undefined;
 
     try {
-      const model = body.model || this.config.get('LLM_MODEL') || 'deepseek-v4-pro';
+      let llm;
+      const modelName = body.model || this.config.get('LLM_MODEL') || 'deepseek-v4-pro';
+      if (body.modelConfigId) {
+        const dbConfig = await this.modelConfigService.findById(body.modelConfigId);
+        llm = createChatModelFromDbConfig(dbConfig);
+      } else {
+        llm = createChatModel({
+          modelName,
+          temperature: 0.3,
+          apiKey: this.config.get('OPENAI_API_KEY'),
+          baseUrl: this.config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
+        });
+      }
       const history = await this.getHistory(body.conversationId);
-      console.log(`[UIChat] query request | session=${body.sessionId} | model=${model} | input="${body.input.slice(0, 80)}"`);
+      console.log(`[UIChat] query request | session=${body.sessionId} | model=${modelName} | input="${body.input.slice(0, 80)}"`);
       console.log('[UIChat] route: intent=query → queryHandler');
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
-
-      const llm = createChatModel({
-        modelName: model,
-        temperature: 0.3,
-        apiKey: this.config.get('OPENAI_API_KEY'),
-        baseUrl: this.config.get('OPENAI_BASE_URL') || 'https://api.deepseek.com/v1',
-      });
 
       const stream = await llm.stream([
         { role: 'system', content: '你是需求查询助手。简洁回答查询。' },
@@ -278,6 +302,7 @@ export class UIChatController {
       input: string;
       retrievedContext?: string;
       model?: string;
+      modelConfigId?: string;
       conversationId?: string;
       analyzeSessionId?: string;
       clarifyAnswer?: { questionId: string; answer: string; source: string };
@@ -292,33 +317,49 @@ export class UIChatController {
       const convId = body.conversationId;
       const analyzeSid = body.analyzeSessionId;
       const modelName = body.model;
-      console.log(`[UIChat] analyze request | session=${body.sessionId} | model=${modelName || 'default'} | convId=${convId || 'none'} | analyzeSid=${analyzeSid || 'none'} | input="${body.input.slice(0, 80)}" | clarify=${body.clarifyAnswer ? 'yes' : 'no'}`);
+      const modelConfigId = body.modelConfigId;
+      // analyze request received
 
       const history = await this.getHistory(convId);
-
-      // 从 DB 读取已缓存的 extracted 和 clarifyPlan
-      const preExtracted = convId
-        ? await this.getSystemMetadata(convId, 'extracted', analyzeSid)
-        : null;
-      const clarifyPlanMeta = convId
-        ? await this.getSystemMetadata(convId, 'clarify_plan', analyzeSid)
-        : null;
-      const clarifyPlanInput = clarifyPlanMeta
-        ? { ...clarifyPlanMeta, currentQuestionIndex: clarifyPlanMeta.currentQuestionIndex ?? 0 }
-        : null;
 
       heartbeat = setInterval(() => writeSSE(res, ': ping\n\n'), 10_000);
 
       // ---- 使用 OrchestratorService 流式执行 ----
+      // checkpoint 模式下，中间状态（extracted, clarifyPlan）由 MemorySaver 自动管理，
+      // 不再从 DB 手动读写。analyzeSessionId 即为 checkpoint 的 thread_id。
+
+      // Critic-Refine summary 子图 streamFinalNode 的回调——直接写 SSE 推送摘要 token
+      let summaryStreamStarted = false;
+      const tokenWriter = (chunk: string) => {
+        if (res.destroyed || res.writableEnded) return;
+        try {
+          if (!summaryStreamStarted) {
+            summaryStreamStarted = true;
+            writeSSE(res, formatSSE({
+              messageType: 'progress',
+              timestamp: new Date().toISOString(),
+              payload: { step: 'summaryAgent', message: '汇总报告输出中...' },
+            }));
+          }
+          writeSSE(res, formatSSE({
+            messageType: 'markdown',
+            timestamp: new Date().toISOString(),
+            payload: { content: chunk, isChunk: true },
+          }));
+          res.flush?.();
+        } catch { /* 连接已断开 */ }
+      };
+
       const stream = this.orchestrator.streamOrchestrate({
         input: body.input,
         retrievedContext: body.retrievedContext || '',
         modelName,
+        modelConfigId,
         history,
-        preExtracted: preExtracted as Record<string, unknown> | null,
-        clarifyPlan: clarifyPlanInput as Record<string, unknown> | null,
+        threadId: analyzeSid,
         clarifyAnswer: body.clarifyAnswer || null,
         skipClarify: !convId,
+        tokenWriter,
       });
 
       let orchestratorResult: any = null;
@@ -357,19 +398,11 @@ export class UIChatController {
 
       const result = orchestratorResult;
 
-      console.log(`[UIChat] graph result | intent=${result.steps?.classifier || '?'} | needsClarify=${result.needsClarification || false} | summaryLen=${(result.report || '').length} | questionsCount=${(result.questions || []).length} | convId=${convId || 'none'} | analyzeSid=${analyzeSid || 'none'}`);
+      console.log(`[UIChat] graph result | intent=${result.steps?.classifier || '?'} | needsClarify=${result.needsClarification || false} | summaryLen=${(result.report || '').length}`);
 
-      // --- clarify 持久化 + UI 推送 ---
+      // --- clarify UI 推送 + DB 持久化（仅前端刷新恢复用，图不再读 DB） ---
       if (result.needsClarification && result.currentQuestion && convId && analyzeSid) {
-        // 持久化 extracted（首轮）
-        if (result.extracted && Object.keys(result.extracted).length > 0) {
-          await this.upsertSystemMetadata(convId, {
-            type: 'extracted',
-            analyzeSessionId: analyzeSid,
-            data: result.extracted,
-          });
-        }
-        // 持久化 clarifyPlan
+        // 持久化 clarifyPlan 到 DB（仅供前端刷新时恢复 UI 状态，图通过 checkpoint 管理）
         const planMeta: Record<string, unknown> = {
           type: 'clarify_plan',
           analyzeSessionId: analyzeSid,
@@ -380,35 +413,26 @@ export class UIChatController {
         };
         await this.upsertSystemMetadata(convId, planMeta);
 
-        // 发送问题文本
-        const hintText = result.retryHint ? `\n\n> ${result.retryHint}` : '';
+        // 发送 options UI（无论 options 是否为空都发，空选项时前端展示文本输入）
+        // 问题文本由 clarify_question 组件渲染，不再额外发 markdown 消息避免重复
         writeSSE(res, formatSSE({
-          messageType: 'markdown',
+          messageType: 'ui',
           timestamp: new Date().toISOString(),
-          payload: { content: `**${result.currentQuestion.question}**${hintText}`, isChunk: false },
+          payload: {
+            messageId: `clarify-${Date.now()}`,
+            components: [{
+              type: 'clarify_question',
+              questionId: result.currentQuestion.id,
+              question: result.currentQuestion.question,
+              options: result.currentQuestion.options || [],
+              multiSelect: (result.currentQuestion as any).multiSelect || false,
+            }],
+          },
         }));
-
-        // 发送 options UI
-        if (result.currentQuestion.options.length > 0) {
-          writeSSE(res, formatSSE({
-            messageType: 'ui',
-            timestamp: new Date().toISOString(),
-            payload: {
-              messageId: `clarify-${Date.now()}`,
-              components: [{
-                type: 'clarify_question',
-                questionId: result.currentQuestion.id,
-                question: result.currentQuestion.question,
-                options: result.currentQuestion.options,
-              }],
-            },
-          }));
-        }
       }
 
-      // clarify 完成时持久化最终 plan
+      // clarify 完成时更新 DB 中最终 plan（标记 currentQuestionIndex=-1 表示全部完成）
       if (!result.needsClarification && result.questions && result.questions.length > 0 && convId && analyzeSid) {
-        console.log(`[UIChat] persist final clarify_plan | questionsCount=${result.questions.length} | statuses=${result.questions.map((q: any) => `${q.id}:${q.status}`).join(',')}`);
         const finalPlan: Record<string, unknown> = {
           type: 'clarify_plan',
           analyzeSessionId: analyzeSid,
@@ -417,6 +441,8 @@ export class UIChatController {
         };
         await this.upsertSystemMetadata(convId, finalPlan);
       }
+
+      // 摘要内容已由 streamFinalNode 通过 tokenWriter 逐字推送，此处不再重复
 
       writeSSE(res, formatSSE({ messageType: 'done', timestamp: new Date().toISOString(), payload: null }));
     } catch (err) {
