@@ -98,6 +98,12 @@ export async function getNotifications(since?: string): Promise<NotificationEven
   return request(`/chat/notifications${since ? `?since=${encodeURIComponent(since)}` : ""}`);
 }
 
+// --- Model Configs ---
+
+export async function getAvailableModels(): Promise<import('./types').ModelConfigItem[]> {
+  return request('/chat/model-configs/available?type=general');
+}
+
 // --- UI Chat (chat service 3002) ---
 
 export async function uiAction(sessionId: string, action: UIAction): Promise<AIUIResponse> {

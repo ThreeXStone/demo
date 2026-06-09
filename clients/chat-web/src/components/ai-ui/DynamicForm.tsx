@@ -11,8 +11,16 @@ interface Props {
   onAction: (action: Record<string, unknown>) => void;
 }
 
+function buildInitialData(fields: UIFormField[]): Record<string, string> {
+  const data: Record<string, string> = {};
+  for (const f of fields) {
+    if (f.defaultValue) data[f.name] = f.defaultValue;
+  }
+  return data;
+}
+
 export default function DynamicForm({ title, fields, submitLabel, submittedFormData, onAction }: Props) {
-  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [formData, setFormData] = useState<Record<string, string>>(() => buildInitialData(fields));
   const hasSubmitted = !!submittedFormData;
 
   const handleSubmit = (e: React.FormEvent) => {

@@ -3,12 +3,13 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   createConversation, saveMessage, uiAction,
-  getMessages,
+  getMessages, getAvailableModels,
   type Message,
 } from '@/lib/api';
-import type { UIComponent, StreamMessage } from '@/lib/types';
+import type { UIComponent, StreamMessage, ModelConfigItem } from '@/lib/types';
 import ComponentRenderer from './ai-ui/ComponentRenderer';
 import ThinkingIndicator from './ai-ui/ThinkingIndicator';
+import Markdown from './ai-ui/Markdown';
 
 interface ChatMsg { role: 'user' | 'ai'; content: string; components?: UIComponent[]; }
 
@@ -17,11 +18,6 @@ function routeIntent(input: string): 'query' | 'chat' | 'analyze' {
   if (/需求|功能|优化|新增|改进|做一个|开发|登录|注册|模块/.test(input)) return 'analyze';
   return 'chat';
 }
-
-const MODELS = [
-  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
-  { value: 'gpt-5.4', label: 'GPT-5' },
-];
 
 interface Props {
   conversationId: string | null;
@@ -34,20 +30,42 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState(() =>
-    typeof window !== 'undefined' ? localStorage.getItem('preferred_model') || 'deepseek-v4-pro' : 'deepseek-v4-pro'
+  const [availableModels, setAvailableModels] = useState<ModelConfigItem[]>([]);
+  const [modelConfigId, setModelConfigId] = useState<string | null>(null);
+  const [modelName, setModelName] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('preferred_model') || '' : ''
   );
   const [streamingContent, setStreamingContent] = useState('');
   const [isInClarifyMode, setIsInClarifyMode] = useState(false);
   const [currentAnalyzeSessionId, setCurrentAnalyzeSessionId] = useState<string | null>(null);
   const [currentClarifyQuestionId, setCurrentClarifyQuestionId] = useState<string | null>(null);
+  const activeConvIdRef = useRef<string | null>(convId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { loadingRef.current = loading; }, [loading]);
+  useEffect(() => { if (convId) activeConvIdRef.current = convId; }, [convId]);
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingContent]);
   useEffect(() => () => { loadingRef.current = false; }, []);
+
+  // 加载可用模型列表
+  useEffect(() => {
+    getAvailableModels().then((models) => {
+      setAvailableModels(models);
+      // 按 localStorage 匹配 modelName → modelConfigId
+      const preferred = localStorage.getItem('preferred_model') || '';
+      const match = models.find((m) => m.model === preferred);
+      const fallback = models.find((m) => m.isDefault) || models[0];
+      if (match) {
+        setModelConfigId(match.id);
+        setModelName(match.model);
+      } else if (fallback) {
+        setModelConfigId(fallback.id);
+        setModelName(fallback.model);
+      }
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!convId) { setMessages([]); return; }
@@ -59,7 +77,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
       // 从 system 消息中提取 clarify_plan
       let clarifyPlan: Record<string, unknown> | null = null;
       let analyzeSessionId: string | null = null;
-      console.log(`[UI] history load | systemRows=${systemRows.length} | displayRows=${displayRows.length}`);
       for (const sys of systemRows) {
         const meta = sys.metadata as Record<string, unknown> | null;
         if (meta?.type === 'clarify_plan') {
@@ -67,8 +84,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
           if (meta.analyzeSessionId) {
             analyzeSessionId = meta.analyzeSessionId as string;
           }
-          const qs = (meta.questions as Array<Record<string, unknown>>) || [];
-          console.log(`[UI] clarify_plan found | questionsCount=${qs.length} | currentIdx=${meta.currentQuestionIndex} | statuses=${qs.map((q: any) => `${q.id}:${q.status}`).join(',')}`);
         }
       }
 
@@ -98,7 +113,6 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
           components = components.map((comp): UIComponent => {
             if (comp.type === 'clarify_question') {
               const qState = questionsMap.get(comp.questionId);
-              console.log(`[UI] annotate clarify qId=${comp.questionId} | qState=${qState ? `status=${qState.status} answer=${qState.answer} idx=${qState.index} curIdx=${currentQuestionIdx}` : 'NOT_FOUND'}`);
               if (qState) {
                 if (qState.status === 'answered' && qState.answer) {
                   return { ...comp, answeredValue: qState.answer };
@@ -158,7 +172,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
     const resp = await fetch(`http://localhost:3002${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, input: text, model, conversationId: convId, ...extraBody }),
+      body: JSON.stringify({ sessionId, input: text, model: modelName, modelConfigId, conversationId: activeConvIdRef.current, ...extraBody }),
       signal: ctrl.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -176,7 +190,25 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
       while (loadingRef.current) {
         if (Date.now() - startTime > MAX_TIME) break;
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // 处理 buffer 中残留的最后一截数据
+          if (buffer.trim()) {
+            const line = buffer.trim();
+            if (line.startsWith('data: ')) {
+              const payload = line.slice(6).trim();
+              if (payload) {
+                try {
+                  const msg = JSON.parse(payload);
+                  if (msg.messageType === 'markdown') {
+                    content += (msg.payload as any).content || '';
+                    setStreamingContent(content);
+                  }
+                } catch { /* ignore parse error on trailing fragment */ }
+              }
+            }
+          }
+          break;
+        }
         buffer += decoder.decode(value, { stream: true });
 
         const lines = buffer.split('\n');
@@ -239,11 +271,31 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
 
     let cid = convId;
     if (!cid && route !== 'query') {
-      try { const conv = await createConversation(text.slice(0, 20)); cid = conv.id; } catch {}
+      try { const conv = await createConversation(text.slice(0, 20)); cid = conv.id; activeConvIdRef.current = cid; } catch {}
     }
 
     // 澄清模式下直接走 /analyze，带 clarifyAnswer
     if (isInClarifyMode && currentClarifyQuestionId && currentAnalyzeSessionId) {
+      // 立即标注上一轮问题的已回答状态（不等请求返回）
+      setMessages((prev) => {
+        const updated = [...prev];
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].role === 'ai' && updated[i].components) {
+            updated[i] = {
+              ...updated[i],
+              components: updated[i].components!.map((c) => {
+                if (c.type === 'clarify_question' && c.questionId === currentClarifyQuestionId) {
+                  return { ...c, answeredValue: text };
+                }
+                return c;
+              }),
+            };
+            break;
+          }
+        }
+        return updated;
+      });
+
       try {
         const aiMsg = await handleSSE('/chat/ui-chat/analyze', text, ctrl, {
           analyzeSessionId: currentAnalyzeSessionId,
@@ -253,24 +305,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             source: 'text',
           },
         });
-        if (loadingRef.current) setMessages((prev) => {
-          const updated = [...prev];
-          for (let i = updated.length - 1; i >= 0; i--) {
-            if (updated[i].role === 'ai' && updated[i].components) {
-              updated[i] = {
-                ...updated[i],
-                components: updated[i].components!.map((c) => {
-                  if (c.type === 'clarify_question' && c.questionId === currentClarifyQuestionId) {
-                    return { ...c, answeredValue: text };
-                  }
-                  return c;
-                }),
-              };
-              break;
-            }
-          }
-          return [...updated, aiMsg];
-        });
+        if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
         if (cid) {
           saveMessage(cid, 'human', text).catch(() => {});
           saveMessage(cid, 'ai', aiMsg.content,
@@ -321,6 +356,26 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
   const handleAction = async (comp: UIComponent, action: Record<string, unknown>) => {
     // 澄清芯片点击 → 直接走 SSE /analyze
     if (action.type === 'clarify_answer') {
+      // 立即标注上一轮问题的已回答状态（不等请求返回）
+      setMessages((prev) => {
+        const updated = [...prev];
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].role === 'ai' && updated[i].components) {
+            updated[i] = {
+              ...updated[i],
+              components: updated[i].components!.map((c) => {
+                if (c.type === 'clarify_question' && c.questionId === action.questionId) {
+                  return { ...c, answeredValue: action.answer as string };
+                }
+                return c;
+              }),
+            };
+            break;
+          }
+        }
+        return updated;
+      });
+
       setLoading(true);
       loadingRef.current = true;
       const ctrl = new AbortController();
@@ -333,27 +388,10 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             source: action.source as string,
           },
         });
-        if (loadingRef.current) setMessages((prev) => {
-          const updated = [...prev];
-          for (let i = updated.length - 1; i >= 0; i--) {
-            if (updated[i].role === 'ai' && updated[i].components) {
-              updated[i] = {
-                ...updated[i],
-                components: updated[i].components!.map((c) => {
-                  if (c.type === 'clarify_question' && c.questionId === action.questionId) {
-                    return { ...c, answeredValue: action.answer as string };
-                  }
-                  return c;
-                }),
-              };
-              break;
-            }
-          }
-          return [...updated, aiMsg];
-        });
-        if (convId) {
-          saveMessage(convId, 'human', action.answer as string).catch(() => {});
-          saveMessage(convId, 'ai', aiMsg.content,
+        if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
+        if (activeConvIdRef.current) {
+          saveMessage(activeConvIdRef.current, 'human', action.answer as string).catch(() => {});
+          saveMessage(activeConvIdRef.current, 'ai', aiMsg.content,
             aiMsg.components ? { components: aiMsg.components } : undefined
           ).catch(() => {});
         }
@@ -397,8 +435,8 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
       });
 
       // 持久化响应消息（含 actionPayload 供刷新时恢复组件状态）
-      if (convId) {
-        saveMessage(convId, 'ai', resp.message, {
+      if (activeConvIdRef.current) {
+        saveMessage(activeConvIdRef.current, 'ai', resp.message, {
           components: resp.components,
           actionPayload: action,
         }).catch(() => {});
@@ -418,7 +456,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
             analyzeSessionId: sid,
           });
           if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);
-          if (convId) saveMessage(convId, 'ai', aiMsg.content,
+          if (activeConvIdRef.current) saveMessage(activeConvIdRef.current, 'ai', aiMsg.content,
             aiMsg.components ? { components: aiMsg.components } : undefined
           ).catch(() => {});
         } catch {
@@ -472,12 +510,22 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
           )}
           <span className="text-xs text-gray-400 ml-2">模型</span>
           <select
-            value={model}
-            onChange={(e) => { setModel(e.target.value); localStorage.setItem('preferred_model', e.target.value); }}
+            value={modelConfigId || ''}
+            onChange={(e) => {
+              const selected = availableModels.find((m) => m.id === e.target.value);
+              if (selected) {
+                setModelConfigId(selected.id);
+                setModelName(selected.model);
+                localStorage.setItem('preferred_model', selected.model);
+              }
+            }}
             className="text-xs bg-gray-50 border border-gray-200 rounded-md px-2 py-1 text-gray-600 focus:outline-none focus:border-gray-300 cursor-pointer"
           >
-            {MODELS.map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
+            {availableModels.length === 0 && (
+              <option value="">加载中...</option>
+            )}
+            {availableModels.map((m) => (
+              <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </select>
         </div>
@@ -515,7 +563,10 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
                         ? 'bg-gray-100 text-gray-800 rounded-br-md'
                         : 'text-gray-800'
                     }`}>
-                      <div className="whitespace-pre-wrap">{msg.content}</div>
+                      {isUser(msg.role)
+                        ? <div className="whitespace-pre-wrap">{msg.content}</div>
+                        : <Markdown content={msg.content} />
+                      }
                     </div>
                     {isUser(msg.role) && (
                       <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center shrink-0 mt-0.5">
@@ -543,8 +594,8 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
                 </div>
-                <div className="text-sm leading-relaxed text-gray-800 whitespace-pre-wrap py-1">
-                  {streamingContent}<span className="inline-block w-1.5 h-4 bg-gray-300 ml-0.5 animate-pulse align-middle rounded-sm" />
+                <div className="text-sm leading-relaxed text-gray-800 py-1">
+                  <Markdown content={streamingContent} /><span className="inline-block w-1.5 h-4 bg-gray-300 ml-0.5 animate-pulse align-middle rounded-sm" />
                 </div>
               </div>
             </div>

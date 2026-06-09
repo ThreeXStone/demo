@@ -69,6 +69,7 @@ export interface UIClarifyQuestion {
   questionId: string;
   question: string;
   options: string[];
+  multiSelect?: boolean;
   answeredValue?: string;
   disabled?: boolean;
 }
@@ -100,6 +101,22 @@ export interface ChatMessage {
   content: string;
   components?: UIComponent[];
   isStreaming?: boolean;
+}
+
+// --- Model Config ---
+
+export interface ModelConfigItem {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  type: string;
+  priority: number;
+  isActive: boolean;
+  isDefault: boolean;
+  capabilities: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 // --- Streaming Types ---
