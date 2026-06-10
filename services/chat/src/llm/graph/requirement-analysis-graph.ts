@@ -1,7 +1,7 @@
 import { Annotation, MessagesAnnotation, StateGraph, START, END } from '@langchain/langgraph';
-import { MemorySaver } from '@langchain/langgraph';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { BaseMessage, SystemMessage, HumanMessage } from '@langchain/core/messages';
+import type { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
+import { BaseMessage, SystemMessage, HumanMessage, AIMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 import {
   createExtractAgent,
@@ -418,7 +418,7 @@ async function triageNodeFn(
     if (result.action === 'answer') {
       console.log(`[UIChat] triage → answer | ${(result.response || '').slice(0, 50)}`);
       return {
-        messages: [new AIMessage(result.response)],
+        messages: [new AIMessage(result.response || '')],
         intent: 'chat',
         chatResponse: result.response,
         summary: result.response,
@@ -610,7 +610,7 @@ export function createAnalysisGraph(
   strongModel: BaseChatModel,
   _onProgress?: (step: string, message: string) => void,
   _onToken?: (content: string) => void,
-  checkpointer?: MemorySaver,
+  checkpointer?: PostgresSaver,
 ) {
   const summarySubGraph = createSummarySubGraph(strongModel);
 
@@ -674,6 +674,7 @@ export async function runAnalysisGraph(args: {
   retrievedContext: string;
   lightModel: BaseChatModel;
   strongModel: BaseChatModel;
+  checkpointer: PostgresSaver;
   history?: { role: 'user' | 'assistant'; content: string }[];
   threadId?: string;
   clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
@@ -687,7 +688,7 @@ export async function runAnalysisGraph(args: {
     args.strongModel,
     args.onProgress,
     args.onToken,
-    useCheckpoint ? hitlCheckpointer : undefined,
+    useCheckpoint ? args.checkpointer : undefined,
   );
 
   const config = useCheckpoint
@@ -712,7 +713,7 @@ export async function runAnalysisGraph(args: {
     config,
   );
 
-  const intent = (result.intent as 'analyze' | 'query' | 'chat' | 'risk_only') || 'analyze';
+  const intent = (result.intent as 'analyze' | 'chat' | 'risk_only') || 'analyze';
 
   const steps: Record<string, string> = { triage: intent };
 
@@ -750,7 +751,6 @@ export async function runAnalysisGraph(args: {
     retryHint: intent === 'analyze' ? (result.retryHint as string) ?? '' : undefined,
     analysisResult: intent === 'analyze' ? (result.analysisResult as string) ?? '' : undefined,
     riskResult: intent === 'analyze' ? (result.riskResult as string) ?? '' : undefined,
-    queryResponse: intent === 'query' ? (result.queryResponse as string) ?? '' : undefined,
     chatResponse: intent === 'chat' ? (result.chatResponse as string) ?? '' : undefined,
     ...expertFields,
     steps,
@@ -792,6 +792,7 @@ export async function* streamAnalysisGraph(args: {
   retrievedContext: string;
   lightModel: BaseChatModel;
   strongModel: BaseChatModel;
+  checkpointer: PostgresSaver;
   history?: { role: 'user' | 'assistant'; content: string }[];
   threadId?: string;
   clarifyAnswer?: { questionId: string; answer: string; source: string } | null;
@@ -807,7 +808,7 @@ export async function* streamAnalysisGraph(args: {
     strongModel,
     undefined,
     undefined,
-    useCheckpoint ? hitlCheckpointer : undefined,
+    useCheckpoint ? args.checkpointer : undefined,
   );
 
   const visitedNodes = new Set<string>();
@@ -885,7 +886,7 @@ export async function* streamAnalysisGraph(args: {
 
     // 从累积状态构建结果（不再 fallback invoke）
     const result = accumulated as unknown as typeof RequirementAnalysisState.State;
-    const intent = (result.intent as 'analyze' | 'query' | 'chat' | 'risk_only') || 'analyze';
+    const intent = (result.intent as 'analyze' | 'chat' | 'risk_only') || 'analyze';
 
     yield {
       type: 'log',
@@ -956,10 +957,4 @@ export async function* streamAnalysisGraph(args: {
   }
 }
 
-// --- HITL Checkpointer ---
-
-/**
- * 共享 MemorySaver，同一 thread_id 的 checkpoint 在多次调用间保持。
- * 生产环境可替换为 PostgresSaver（接口等价）。
- */
-export const hitlCheckpointer = new MemorySaver();
+// checkpoint 已迁移至 PostgresSaver（postgres-checkpointer.service.ts）

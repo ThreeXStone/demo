@@ -10,6 +10,7 @@ import {
 import type { RunAnalysisGraphOutput } from '../graph/requirement-analysis-graph';
 import type { OrchestratorStreamEvent, OrchestratorResult } from '../ui-protocol/ui-types';
 import type { UIContext } from '../../conversation/ui-action.parser';
+import { PostgresCheckpointerService } from '../graph/postgres-checkpointer.service';
 
 /** 图节点名 → Agent 名映射 */
 const NODE_TO_AGENT: Record<string, string> = {
@@ -32,6 +33,7 @@ export class OrchestratorService {
   constructor(
     private readonly config: ConfigService,
     private readonly modelConfigService: ModelConfigService,
+    private readonly checkpointerService: PostgresCheckpointerService,
   ) {}
 
   /**
@@ -49,6 +51,7 @@ export class OrchestratorService {
   }): Promise<OrchestratorResult> {
     const { strongModel, apiKey, baseUrl } = await this.buildModel(args.modelName, args.modelConfigId);
     const lightModel = this.buildLightModel(apiKey, baseUrl);
+    const cp = this.checkpointerService.getCheckpointer();
 
     try {
       const result: RunAnalysisGraphOutput = await runAnalysisGraph({
@@ -56,6 +59,7 @@ export class OrchestratorService {
         retrievedContext: args.retrievedContext,
         lightModel,
         strongModel,
+        checkpointer: cp,
         history: args.history,
         threadId: args.threadId,
         clarifyAnswer: args.clarifyAnswer,
@@ -104,12 +108,14 @@ export class OrchestratorService {
 
       const { strongModel, apiKey, baseUrl } = await this.buildModel(args.modelName, args.modelConfigId);
       const lightModel = this.buildLightModel(apiKey, baseUrl);
+      const cp = this.checkpointerService.getCheckpointer();
 
       const graphStream = streamAnalysisGraph({
         input: args.input,
         retrievedContext: args.retrievedContext,
         lightModel,
         strongModel,
+        checkpointer: cp,
         history: args.history,
         threadId: args.threadId,
         clarifyAnswer: args.clarifyAnswer,
