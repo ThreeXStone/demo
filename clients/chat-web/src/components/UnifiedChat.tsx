@@ -13,19 +13,14 @@ import Markdown from './ai-ui/Markdown';
 
 interface ChatMsg { role: 'user' | 'ai'; content: string; components?: UIComponent[]; }
 
-function routeIntent(input: string): 'query' | 'chat' | 'analyze' {
-  if (/退货|退款|换货|订单|物流|售后|收货|拆封|商品|保修|发票|投诉/.test(input)) return 'query';
-  if (/需求|功能|优化|新增|改进|做一个|开发|登录|注册|模块/.test(input)) return 'analyze';
-  return 'chat';
-}
-
 interface Props {
   conversationId: string | null;
   onToggleNotif?: () => void;
   onToggleLog?: () => void;
+  onConversationCreated?: (id: string) => void;
 }
 
-export default function UnifiedChat({ conversationId: convId, onToggleNotif, onToggleLog }: Props) {
+export default function UnifiedChat({ conversationId: convId, onToggleNotif, onToggleLog, onConversationCreated }: Props) {
   const [sessionId] = useState(() => `u-${Date.now()}`);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -40,6 +35,7 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
   const [currentAnalyzeSessionId, setCurrentAnalyzeSessionId] = useState<string | null>(null);
   const [currentClarifyQuestionId, setCurrentClarifyQuestionId] = useState<string | null>(null);
   const activeConvIdRef = useRef<string | null>(convId);
+  const justCreatedRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -69,6 +65,11 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
 
   useEffect(() => {
     if (!convId) { setMessages([]); return; }
+    // 自动创建的会话已有本地消息，无需从后端拉取
+    if (justCreatedRef.current === convId) {
+      justCreatedRef.current = null;
+      return;
+    }
     getMessages(convId).then((rows) => {
       // 分离 system 消息和展示消息
       const systemRows = rows.filter((r) => r.role === 'system');
@@ -266,12 +267,11 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
 
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
 
-    const route = routeIntent(text);
     const ctrl = new AbortController();
 
     let cid = convId;
-    if (!cid && route !== 'query') {
-      try { const conv = await createConversation(text.slice(0, 20)); cid = conv.id; activeConvIdRef.current = cid; } catch {}
+    if (!cid) {
+      try { const conv = await createConversation(text.slice(0, 20)); cid = conv.id; activeConvIdRef.current = cid; justCreatedRef.current = cid; onConversationCreated?.(cid); } catch {}
     }
 
     // 澄清模式下直接走 /analyze，带 clarifyAnswer
@@ -327,11 +327,10 @@ export default function UnifiedChat({ conversationId: convId, onToggleNotif, onT
     }
 
     try {
-      const endpoint = route === 'analyze'
+      const isAnalyze = /需求|功能|优化|新增|改进|做一个|开发|登录|注册|模块/.test(text);
+      const endpoint = isAnalyze
         ? '/chat/ui-chat/requirement/collect'
-        : route === 'query'
-          ? '/chat/ui-chat/query'
-          : '/chat/ui-chat/chat';
+        : '/chat/ui-chat/chat';
       const aiMsg = await handleSSE(endpoint, text, ctrl);
 
       if (loadingRef.current) setMessages((prev) => [...prev, aiMsg]);

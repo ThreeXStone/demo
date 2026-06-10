@@ -12,9 +12,10 @@ interface Props {
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  refreshKey?: number;
 }
 
-export default function ConversationList({ activeId, onSelect, onNew }: Props) {
+export default function ConversationList({ activeId, onSelect, onNew, refreshKey }: Props) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -32,7 +33,7 @@ export default function ConversationList({ activeId, onSelect, onNew }: Props) {
 
   useEffect(() => {
     fetchList();
-  }, []);
+  }, [refreshKey]);
 
   const handleCreate = async () => {
     try {

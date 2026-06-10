@@ -16,6 +16,7 @@ export default function Home() {
   const [chatKey, setChatKey] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     setAuthorized(hasToken());
@@ -28,6 +29,10 @@ export default function Home() {
   }, []);
 
   const handleNew = useCallback(() => { setChatKey((k) => k + 1); }, []);
+  const handleConversationCreated = useCallback((id: string) => {
+    setActiveId(id);
+    setRefreshKey((k) => k + 1);
+  }, []);
   const handleLogout = () => { clearToken(); setAuthorized(false); setActiveId(null); };
 
   if (!authChecked) return null;
@@ -51,7 +56,7 @@ export default function Home() {
         </div>
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex-1 min-h-0">
-            <ConversationList activeId={activeId} onSelect={handleSelect} onNew={handleNew} />
+            <ConversationList activeId={activeId} onSelect={handleSelect} onNew={handleNew} refreshKey={refreshKey} />
           </div>
           <div className="border-t border-gray-100 h-52">
             <SidebarDocs />
@@ -65,6 +70,7 @@ export default function Home() {
           conversationId={activeId}
           onToggleNotif={() => setNotifOpen(!notifOpen)}
           onToggleLog={() => setLogOpen(!logOpen)}
+          onConversationCreated={handleConversationCreated}
         />
       </div>
 
