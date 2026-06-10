@@ -12,28 +12,57 @@ import ActionButtons from './ActionButtons';
 
 function MultiSelectCard({ component, onAction }: { component: UIClarifyQuestion; onAction: (a: Record<string, unknown>) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const hasSubmitted = !!component.answeredValue;
   const toggle = (opt: string) => {
+    if (hasSubmitted) return;
     setSelected((prev) => prev.includes(opt) ? prev.filter(o => o !== opt) : [...prev, opt]);
   };
   return (
     <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
       <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
         <h4 className="text-sm font-semibold text-gray-800">{component.question}</h4>
-        <span className="text-xs text-gray-400">可多选</span>
+        {hasSubmitted ? (
+          <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full font-medium">
+            已选
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400">可多选</span>
+        )}
       </div>
       <div className="p-3 space-y-1">
-        {component.options.map((opt) => (
-          <label key={opt} className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
-            <input type="checkbox" checked={selected.includes(opt)} onChange={() => toggle(opt)}
-              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-            <span className="text-sm text-gray-800">{opt}</span>
-          </label>
-        ))}
-        <button
-          disabled={selected.length === 0}
-          onClick={() => onAction({ type: 'clarify_answer', questionId: component.questionId, answer: selected.join(', '), source: 'multi-select' })}
-          className="w-full mt-2 py-2.5 bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-sm font-medium"
-        >确认选择 ({selected.length})</button>
+        {component.options.map((opt) => {
+          const isChecked = hasSubmitted
+            ? component.answeredValue!.split(', ').includes(opt)
+            : selected.includes(opt);
+          return (
+            <label
+              key={opt}
+              className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border transition-colors ${
+                hasSubmitted
+                  ? 'border-gray-100 bg-gray-50 cursor-not-allowed'
+                  : 'border-gray-100 hover:bg-gray-50 cursor-pointer'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={isChecked}
+                disabled={hasSubmitted}
+                onChange={() => toggle(opt)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className={`text-sm ${hasSubmitted ? 'text-gray-400' : 'text-gray-800'}`}>
+                {opt}
+              </span>
+            </label>
+          );
+        })}
+        {!hasSubmitted && (
+          <button
+            disabled={selected.length === 0}
+            onClick={() => onAction({ type: 'clarify_answer', questionId: component.questionId, answer: selected.join(', '), source: 'multi-select' })}
+            className="w-full mt-2 py-2.5 bg-gray-900 text-white rounded-lg hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-sm font-medium"
+          >确认选择 ({selected.length})</button>
+        )}
       </div>
     </div>
   );
